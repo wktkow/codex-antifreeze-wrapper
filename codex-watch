@@ -6,10 +6,10 @@
 # not a regex.
 TYPE_IN = "/goal resume"
 WHEN_OUTPUT_CONTAINS = "Goal blocked"
-SUBMIT_KEY = "ctrl-enter"
+SUBMIT_KEY = "ctrl-x"
 
 # Treat repeated unfreezes as a bug, not as normal operation.
-MIN_SECONDS_BETWEEN_UNFREEZES = 120
+MIN_SECONDS_BETWEEN_UNFREEZES = 60
 MAX_UNFREEZES_PER_WINDOW = 3
 UNFREEZE_WINDOW_SECONDS = 600
 
@@ -78,10 +78,10 @@ def submit_key_sequence(key_name: str) -> bytes:
         return b"\r"
     if normalized in {"lf", "linefeed"}:
         return b"\n"
-    if normalized == "ctrl-j":
-        return b"\x0a"
-    if normalized == "ctrl-m":
-        return b"\x0d"
+    if normalized.startswith("ctrl-") and len(normalized) == len("ctrl-x"):
+        char = normalized[-1]
+        if "a" <= char <= "z":
+            return bytes([ord(char) - ord("a") + 1])
     if normalized == "ctrl-enter":
         return b"\x1b[13;5u"
     if normalized == "shift-enter":
@@ -93,7 +93,7 @@ def submit_key_sequence(key_name: str) -> bytes:
     raise ValueError(
         "invalid submit key: "
         f"{key_name!r}; use enter, ctrl-enter, shift-enter, alt-enter, "
-        "ctrl-shift-enter, ctrl-j, ctrl-m, none, or raw:<escaped-bytes>"
+        "ctrl-shift-enter, ctrl-a through ctrl-z, none, or raw:<escaped-bytes>"
     )
 
 

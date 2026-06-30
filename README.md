@@ -4,8 +4,8 @@ A small PTY wrapper and terminal shim for `codex`.
 
 The `codex-watch` script runs `codex` as an interactive terminal program, mirrors
 your input/output normally, and watches the output for configured text. When the
-text matches, it sends a configured reply followed by Enter. It can also send
-the reply after an idle timeout.
+text matches, it sends a configured reply followed by a submit key. It can also
+send the reply after an idle timeout.
 
 The `codex` shim is the command you put earlier on your `PATH`. It replaces the
 terminal entrypoint, finds the real `codex` binary, offers to attach to existing
@@ -67,21 +67,22 @@ The simplest setup is to edit these values at the top of `codex-watch`:
 ```python
 TYPE_IN = "your unfreeze string here"
 WHEN_OUTPUT_CONTAINS = "your exact matching text here"
-SUBMIT_KEY = "ctrl-enter"
-MIN_SECONDS_BETWEEN_UNFREEZES = 120
+SUBMIT_KEY = "ctrl-x"
+MIN_SECONDS_BETWEEN_UNFREEZES = 60
 MAX_UNFREEZES_PER_WINDOW = 3
 UNFREEZE_WINDOW_SECONDS = 600
 ```
 
 `WHEN_OUTPUT_CONTAINS` is a plain substring match, not a regex. `TYPE_IN` is
-typed into Codex and then `SUBMIT_KEY` is sent. The default is `ctrl-enter`
-because plain Return can be configured as newline in Codex.
+typed into Codex and then `SUBMIT_KEY` is sent. The default is `ctrl-x` because
+plain Return can be configured as newline in Codex, and Ctrl-Enter depends on
+terminal escape-sequence support.
 
-Make sure Codex has `ctrl-enter` bound as a submit key:
+Make sure Codex has `ctrl-x` bound as a submit key:
 
 ```toml
 [tui.keymap.composer]
-submit = ["enter", "ctrl-enter"]
+submit = ["enter", "ctrl-x"]
 ```
 
 After firing, the watcher latches the match so the same emitted text does not
@@ -90,7 +91,7 @@ match text.
 
 It also treats frequent repeated unfreezes as a bug. By default it will send at
 most 3 automatic replies in 10 minutes, and it will never send replies less than
-120 seconds apart. Suppressed replies are printed as `codex-watch` status
+60 seconds apart. Suppressed replies are printed as `codex-watch` status
 messages instead of being sent to Codex.
 
 Inside tmux, `Ctrl-b` then `d` detaches the session. Normally tmux handles that
@@ -103,8 +104,8 @@ You can also override those defaults from `~/.zshrc`:
 ```sh
 export CODEX_WATCH_MATCH='your exact matching text here'
 export CODEX_WATCH_REPLY='your unfreeze string here'
-export CODEX_WATCH_SUBMIT_KEY=ctrl-enter
-export CODEX_WATCH_COOLDOWN=120
+export CODEX_WATCH_SUBMIT_KEY=ctrl-x
+export CODEX_WATCH_COOLDOWN=60
 export CODEX_WATCH_MAX_UNFREEZES=3
 export CODEX_WATCH_WINDOW=600
 ```
@@ -163,15 +164,15 @@ Run `codex` through the watcher:
 ```sh
 CODEX_WATCH_PATTERN='Press Enter|stalled|frozen|your exact matching text here' \
 CODEX_WATCH_REPLY='your unfreeze string here' \
-CODEX_WATCH_SUBMIT_KEY=ctrl-enter \
-CODEX_WATCH_COOLDOWN=120 \
+CODEX_WATCH_SUBMIT_KEY=ctrl-x \
+CODEX_WATCH_COOLDOWN=60 \
 codex-watch -- codex
 ```
 
 For a plain text match instead of a regex:
 
 ```sh
-codex-watch --match 'your exact matching text here' --reply 'your unfreeze string here' --submit-key ctrl-enter -- codex
+codex-watch --match 'your exact matching text here' --reply 'your unfreeze string here' --submit-key ctrl-x -- codex
 ```
 
 ## Options
