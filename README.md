@@ -68,6 +68,8 @@ The simplest setup is to edit these values at the top of `codex-watch`:
 TYPE_IN = "your unfreeze string here"
 WHEN_OUTPUT_CONTAINS = "your exact matching text here"
 SUBMIT_KEY = "ctrl-m"
+TYPE_KEY_DELAY_SECONDS = 0.015
+SUBMIT_DELAY_SECONDS = 0.15
 MIN_SECONDS_BETWEEN_UNFREEZES = 30
 MAX_UNFREEZES_PER_WINDOW = 3
 UNFREEZE_WINDOW_SECONDS = 600
@@ -77,6 +79,10 @@ UNFREEZE_WINDOW_SECONDS = 600
 typed into Codex and then `SUBMIT_KEY` is sent. The default is `ctrl-m` because
 the wrapper sends a raw carriage-return byte; Codex must bind that byte to
 submit instead of treating it as an editor newline.
+
+The typing and submit delays avoid Codex treating the reply plus submit key as
+one paste-like burst. Keep `SUBMIT_DELAY_SECONDS` above 0.12 seconds unless you
+have verified the submit key still fires reliably.
 
 Make sure Codex has `ctrl-m` bound as a submit key and removed from editor
 newline bindings:
@@ -110,6 +116,8 @@ You can also override those defaults from `~/.zshrc`:
 export CODEX_WATCH_MATCH='your exact matching text here'
 export CODEX_WATCH_REPLY='your unfreeze string here'
 export CODEX_WATCH_SUBMIT_KEY=ctrl-m
+export CODEX_WATCH_TYPE_DELAY=0.015
+export CODEX_WATCH_SUBMIT_DELAY=0.15
 export CODEX_WATCH_COOLDOWN=30
 export CODEX_WATCH_MAX_UNFREEZES=3
 export CODEX_WATCH_WINDOW=600
@@ -170,6 +178,8 @@ Run `codex` through the watcher:
 CODEX_WATCH_PATTERN='Press Enter|stalled|frozen|your exact matching text here' \
 CODEX_WATCH_REPLY='your unfreeze string here' \
 CODEX_WATCH_SUBMIT_KEY=ctrl-m \
+CODEX_WATCH_TYPE_DELAY=0.015 \
+CODEX_WATCH_SUBMIT_DELAY=0.15 \
 CODEX_WATCH_COOLDOWN=30 \
 codex-watch -- codex
 ```
@@ -189,6 +199,9 @@ codex-watch --match 'your exact matching text here' --reply 'your unfreeze strin
 --match TEXT           Plain output text to watch for. Defaults to CODEX_WATCH_MATCH or WHEN_OUTPUT_CONTAINS.
 --reply REPLY          Input to send when triggered. Defaults to CODEX_WATCH_REPLY or TYPE_IN.
 --submit-key KEY       Key sequence sent after --reply. Defaults to CODEX_WATCH_SUBMIT_KEY or SUBMIT_KEY.
+--type-delay SECONDS   Seconds to wait between bytes of --reply.
+--submit-delay SECONDS
+                       Seconds to wait between --reply and --submit-key.
 --cooldown SECONDS     Minimum seconds between automatic replies.
 --max-unfreezes COUNT  Maximum automatic replies allowed within --window. Use 0 to disable.
 --window SECONDS       Seconds used for the repeated-unfreeze circuit breaker.
@@ -208,6 +221,8 @@ CODEX_WATCH_DISABLE=1       Run real Codex directly.
 CODEX_WATCH_MATCH           Plain output text to watch for.
 CODEX_WATCH_REPLY           Input to send when triggered.
 CODEX_WATCH_SUBMIT_KEY      Key sequence sent after CODEX_WATCH_REPLY.
+CODEX_WATCH_TYPE_DELAY      Seconds to wait between bytes of CODEX_WATCH_REPLY.
+CODEX_WATCH_SUBMIT_DELAY    Seconds to wait before CODEX_WATCH_SUBMIT_KEY.
 CODEX_WATCH_COOLDOWN        Minimum seconds between automatic replies.
 CODEX_WATCH_MAX_UNFREEZES   Maximum automatic replies allowed per window.
 CODEX_WATCH_WINDOW          Circuit breaker window in seconds.
