@@ -233,6 +233,8 @@ def main() -> int:
     last_output = time.monotonic()
     reply_times = []
     circuit_breaker_open = False
+    pending_match_reason = ""
+    pending_match_due = 0.0
     tmux_bin = os.getenv("CODEX_WATCH_TMUX_BIN", "tmux")
     tmux_detach_hotkey_enabled = (
         ENABLE_CTRL_B_D_TMUX_DETACH
@@ -251,6 +253,21 @@ def main() -> int:
 
     def notice(message: str):
         os.write(stdout_fd, f"\r\n[codex-watch: {message}]\r\n".encode())
+
+    def clear_pending_match():
+        nonlocal pending_match_reason, pending_match_due
+
+        pending_match_reason = ""
+        pending_match_due = 0.0
+
+    def schedule_pending_match(reason: str, retry_at: float):
+        nonlocal pending_match_reason, pending_match_due
+
+        if retry_at <= time.monotonic():
+            return
+
+        pending_match_reason = reason
+        pending_match_due = retry_at
 
     def detach_tmux_client() -> bool:
         try:
@@ -332,7 +349,7 @@ def main() -> int:
         if now - last_sent < args.cooldown:
             remaining = args.cooldown - (now - last_sent)
             notice(f"suppressed reply: cooldown active for {remaining:.1f}s")
-            return
+            return False, last_sent + args.cooldown
 
         if args.max_unfreezes > 0 and args.window > 0:
             reply_times = [sent_at for sent_at in reply_times if now - sent_at < args.window]
@@ -344,7 +361,7 @@ def main() -> int:
                         "not auto-sending"
                     )
                 circuit_breaker_open = True
-                return
+                return False, min(reply_times) + args.window
 
         circuit_breaker_open = False
 
@@ -353,7 +370,7 @@ def main() -> int:
             os.write(master_fd, payload)
         except OSError as e:
             if e.errno in (errno.EIO, errno.EBADF):
-                return
+                return False, 0.0
             raise
 
         last_sent = now
@@ -361,6 +378,15 @@ def main() -> int:
         reply_times.append(now)
 
         notice(f"auto-sent reply: {reason}")
+        return True, last_sent + args.cooldown
+
+    def send_or_schedule_match(reason: str):
+        sent, retry_at = send_reply(reason)
+        if retry_at > 0:
+            schedule_pending_match(reason, retry_at)
+        if sent:
+            return True
+        return False
 
     try:
         while True:
@@ -395,16 +421,20 @@ def main() -> int:
 
                 if reason:
                     if not match_latched:
-                        send_reply(reason)
+                        send_or_schedule_match(reason)
                         latched_notice_sent = False
                     elif not latched_notice_sent:
-                        notice("suppressed reply: match still latched")
+                        if pending_match_reason:
+                            notice("suppressed reply: match still latched; retry scheduled")
+                        else:
+                            notice("suppressed reply: match still latched")
                         latched_notice_sent = True
                     match_latched = True
                     recent = ""
                 elif match_latched and text.strip():
                     match_latched = False
                     latched_notice_sent = False
+                    clear_pending_match()
 
             if stdin_fd in ready:
                 data = os.read(stdin_fd, 8192)
@@ -412,6 +442,13 @@ def main() -> int:
                     forward_stdin(data)
 
             flush_pending_tmux_prefix_if_stale()
+
+            if pending_match_reason and time.monotonic() >= pending_match_due:
+                reason = pending_match_reason
+                clear_pending_match()
+                send_or_schedule_match(reason)
+                match_latched = True
+                latched_notice_sent = False
 
             if args.idle > 0 and time.monotonic() - last_output >= args.idle:
                 send_reply(f"idle {int(args.idle)}s")
