@@ -67,13 +67,22 @@ The simplest setup is to edit these values at the top of `codex-watch`:
 ```python
 TYPE_IN = "your unfreeze string here"
 WHEN_OUTPUT_CONTAINS = "your exact matching text here"
+SUBMIT_KEY = "ctrl-enter"
 MIN_SECONDS_BETWEEN_UNFREEZES = 120
 MAX_UNFREEZES_PER_WINDOW = 3
 UNFREEZE_WINDOW_SECONDS = 600
 ```
 
 `WHEN_OUTPUT_CONTAINS` is a plain substring match, not a regex. `TYPE_IN` is
-typed into Codex and then Return is sent.
+typed into Codex and then `SUBMIT_KEY` is sent. The default is `ctrl-enter`
+because plain Return can be configured as newline in Codex.
+
+Make sure Codex has `ctrl-enter` bound as a submit key:
+
+```toml
+[tui.keymap.composer]
+submit = ["enter", "ctrl-enter"]
+```
 
 After firing, the watcher latches the match so the same emitted text does not
 cause a tight reply loop. It rearms after later output no longer contains the
@@ -94,12 +103,13 @@ You can also override those defaults from `~/.zshrc`:
 ```sh
 export CODEX_WATCH_MATCH='your exact matching text here'
 export CODEX_WATCH_REPLY='your unfreeze string here'
+export CODEX_WATCH_SUBMIT_KEY=ctrl-enter
 export CODEX_WATCH_COOLDOWN=120
 export CODEX_WATCH_MAX_UNFREEZES=3
 export CODEX_WATCH_WINDOW=600
 ```
 
-To send only Enter when the match text appears, leave the reply empty:
+To send only the submit key when the match text appears, leave the reply empty:
 
 ```sh
 export CODEX_WATCH_REPLY=''
@@ -153,6 +163,7 @@ Run `codex` through the watcher:
 ```sh
 CODEX_WATCH_PATTERN='Press Enter|stalled|frozen|your exact matching text here' \
 CODEX_WATCH_REPLY='your unfreeze string here' \
+CODEX_WATCH_SUBMIT_KEY=ctrl-enter \
 CODEX_WATCH_COOLDOWN=120 \
 codex-watch -- codex
 ```
@@ -160,7 +171,7 @@ codex-watch -- codex
 For a plain text match instead of a regex:
 
 ```sh
-codex-watch --match 'your exact matching text here' --reply 'your unfreeze string here' -- codex
+codex-watch --match 'your exact matching text here' --reply 'your unfreeze string here' --submit-key ctrl-enter -- codex
 ```
 
 ## Options
@@ -171,6 +182,7 @@ codex-watch --match 'your exact matching text here' --reply 'your unfreeze strin
 --pattern PATTERN      Regex to watch for. Defaults to CODEX_WATCH_PATTERN.
 --match TEXT           Plain output text to watch for. Defaults to CODEX_WATCH_MATCH or WHEN_OUTPUT_CONTAINS.
 --reply REPLY          Input to send when triggered. Defaults to CODEX_WATCH_REPLY or TYPE_IN.
+--submit-key KEY       Key sequence sent after --reply. Defaults to CODEX_WATCH_SUBMIT_KEY or SUBMIT_KEY.
 --cooldown SECONDS     Minimum seconds between automatic replies.
 --max-unfreezes COUNT  Maximum automatic replies allowed within --window. Use 0 to disable.
 --window SECONDS       Seconds used for the repeated-unfreeze circuit breaker.
@@ -189,6 +201,7 @@ CODEX_WATCH_BIN             codex-watch path.
 CODEX_WATCH_DISABLE=1       Run real Codex directly.
 CODEX_WATCH_MATCH           Plain output text to watch for.
 CODEX_WATCH_REPLY           Input to send when triggered.
+CODEX_WATCH_SUBMIT_KEY      Key sequence sent after CODEX_WATCH_REPLY.
 CODEX_WATCH_COOLDOWN        Minimum seconds between automatic replies.
 CODEX_WATCH_MAX_UNFREEZES   Maximum automatic replies allowed per window.
 CODEX_WATCH_WINDOW          Circuit breaker window in seconds.
