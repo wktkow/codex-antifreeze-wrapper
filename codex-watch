@@ -6,10 +6,10 @@
 # not a regex.
 TYPE_IN = "/goal resume"
 WHEN_OUTPUT_CONTAINS = "Goal blocked"
-SUBMIT_KEY = "ctrl-x"
+SUBMIT_KEY = "ctrl-m"
 
 # Treat repeated unfreezes as a bug, not as normal operation.
-MIN_SECONDS_BETWEEN_UNFREEZES = 60
+MIN_SECONDS_BETWEEN_UNFREEZES = 30
 MAX_UNFREEZES_PER_WINDOW = 3
 UNFREEZE_WINDOW_SECONDS = 600
 
@@ -78,7 +78,7 @@ def submit_key_sequence(key_name: str) -> bytes:
         return b"\r"
     if normalized in {"lf", "linefeed"}:
         return b"\n"
-    if normalized.startswith("ctrl-") and len(normalized) == len("ctrl-x"):
+    if normalized.startswith("ctrl-") and len(normalized) == len("ctrl-a"):
         char = normalized[-1]
         if "a" <= char <= "z":
             return bytes([ord(char) - ord("a") + 1])
