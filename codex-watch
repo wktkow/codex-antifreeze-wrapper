@@ -1,0 +1,230 @@
+#!/usr/bin/env python3
+# Edit these two values.
+#
+# TYPE_IN is sent to the child process followed by Return.
+# WHEN_OUTPUT_CONTAINS is a plain substring match against terminal output. It is
+# not a regex.
+TYPE_IN = "your unfreeze string here"
+WHEN_OUTPUT_CONTAINS = "your exact matching text here"
+
+import argparse
+import errno
+import fcntl
+import os
+import pty
+import re
+import select
+import signal
+import sys
+import termios
+import time
+import tty
+
+
+ANSI_RE = re.compile(
+    r"\x1b\[[0-?]*[ -/]*[@-~]|"        # CSI
+    r"\x1b\][^\x07]*(?:\x07|\x1b\\)|"  # OSC
+    r"\x1b[@-Z\\-_]"                   # 2-byte escapes
+)
+
+
+def strip_ansi(text: str) -> str:
+    return ANSI_RE.sub("", text)
+
+
+def env_or_default(name: str, default: str) -> str:
+    return os.getenv(name) if name in os.environ else default
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description=(
+            "Run an interactive command in a PTY and auto-send input when "
+            "output matches configured text or a regex."
+        )
+    )
+    parser.add_argument(
+        "--match",
+        default=env_or_default("CODEX_WATCH_MATCH", WHEN_OUTPUT_CONTAINS),
+        help=(
+            "Plain output text to watch for. Defaults to CODEX_WATCH_MATCH "
+            "or WHEN_OUTPUT_CONTAINS."
+        ),
+    )
+    parser.add_argument(
+        "--pattern",
+        default=os.getenv("CODEX_WATCH_PATTERN", ""),
+        help="Regex to watch for in addition to --match. Defaults to CODEX_WATCH_PATTERN.",
+    )
+    parser.add_argument(
+        "--reply",
+        default=env_or_default("CODEX_WATCH_REPLY", TYPE_IN),
+        help="Input to send when triggered. Defaults to CODEX_WATCH_REPLY or TYPE_IN.",
+    )
+    parser.add_argument(
+        "--cooldown",
+        type=float,
+        default=float(os.getenv("CODEX_WATCH_COOLDOWN", "120")),
+        help="Minimum seconds between automatic replies.",
+    )
+    parser.add_argument(
+        "--idle",
+        type=float,
+        default=float(os.getenv("CODEX_WATCH_IDLE", "0")),
+        help="Also send the reply after this many seconds without output. Disabled at 0.",
+    )
+    parser.add_argument(
+        "--buffer",
+        type=int,
+        default=int(os.getenv("CODEX_WATCH_BUFFER", "65536")),
+        help="Number of recent output characters to keep for regex matching.",
+    )
+    parser.add_argument(
+        "--no-strip-ansi",
+        action="store_true",
+        help="Match the regex against raw terminal output including ANSI escapes.",
+    )
+    parser.add_argument("cmd", nargs=argparse.REMAINDER)
+
+    args = parser.parse_args()
+
+    if args.cmd and args.cmd[0] == "--":
+        args.cmd = args.cmd[1:]
+
+    if not args.cmd:
+        args.cmd = ["codex"]
+
+    return args
+
+
+def exit_code_from_status(status: int) -> int:
+    if os.WIFEXITED(status):
+        return os.WEXITSTATUS(status)
+    if os.WIFSIGNALED(status):
+        return 128 + os.WTERMSIG(status)
+    return 1
+
+
+def main() -> int:
+    args = parse_args()
+
+    stdin_fd = sys.stdin.fileno()
+    stdout_fd = sys.stdout.fileno()
+
+    pid, master_fd = pty.fork()
+
+    if pid == 0:
+        os.execvp(args.cmd[0], args.cmd)
+
+    old_term = None
+
+    if os.isatty(stdin_fd):
+        old_term = termios.tcgetattr(stdin_fd)
+        tty.setraw(stdin_fd)
+
+    def resize_child(_signum=None, _frame=None):
+        if not os.isatty(stdin_fd):
+            return
+        try:
+            size = fcntl.ioctl(stdin_fd, termios.TIOCGWINSZ, b"\0" * 8)
+            fcntl.ioctl(master_fd, termios.TIOCSWINSZ, size)
+        except OSError:
+            pass
+
+    signal.signal(signal.SIGWINCH, resize_child)
+    resize_child()
+
+    pattern = re.compile(args.pattern, re.IGNORECASE | re.DOTALL) if args.pattern else None
+    match_text = args.match
+    recent = ""
+    last_sent = 0.0
+    last_output = time.monotonic()
+
+    def send_reply(reason: str):
+        nonlocal last_sent, last_output
+
+        now = time.monotonic()
+
+        if now - last_sent < args.cooldown:
+            return
+
+        # Interactive PTYs expect Enter as carriage return.
+        payload = args.reply.encode(errors="ignore") + b"\r"
+        try:
+            os.write(master_fd, payload)
+        except OSError as e:
+            if e.errno in (errno.EIO, errno.EBADF):
+                return
+            raise
+
+        last_sent = now
+        last_output = now
+
+        msg = f"\r\n[codex-watch: auto-sent reply: {reason}]\r\n"
+        os.write(stdout_fd, msg.encode())
+
+    try:
+        while True:
+            read_fds = [master_fd]
+
+            if os.isatty(stdin_fd):
+                read_fds.append(stdin_fd)
+
+            ready, _, _ = select.select(read_fds, [], [], 1.0)
+
+            if master_fd in ready:
+                try:
+                    data = os.read(master_fd, 8192)
+                except OSError as e:
+                    if e.errno == errno.EIO:
+                        break
+                    raise
+
+                if not data:
+                    break
+
+                os.write(stdout_fd, data)
+                last_output = time.monotonic()
+
+                text = data.decode(errors="ignore")
+
+                if not args.no_strip_ansi:
+                    text = strip_ansi(text)
+
+                recent = (recent + text)[-args.buffer:]
+
+                if pattern and pattern.search(recent):
+                    send_reply("regex matched")
+                    recent = ""
+                elif match_text and match_text in recent:
+                    send_reply("text matched")
+                    recent = ""
+
+            if stdin_fd in ready:
+                data = os.read(stdin_fd, 8192)
+                if data:
+                    os.write(master_fd, data)
+
+            if args.idle > 0 and time.monotonic() - last_output >= args.idle:
+                send_reply(f"idle {int(args.idle)}s")
+
+            try:
+                done_pid, status = os.waitpid(pid, os.WNOHANG)
+                if done_pid == pid:
+                    return exit_code_from_status(status)
+            except ChildProcessError:
+                break
+
+    finally:
+        if old_term is not None:
+            termios.tcsetattr(stdin_fd, termios.TCSADRAIN, old_term)
+
+    try:
+        _, status = os.waitpid(pid, 0)
+        return exit_code_from_status(status)
+    except ChildProcessError:
+        return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

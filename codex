@@ -1,0 +1,337 @@
+#!/usr/bin/env bash
+set -u
+
+
+die() {
+  printf 'codex wrapper: %s\n' "$*" >&2
+  exit 1
+}
+
+
+resolve_path() {
+  local target=$1
+  local dir
+
+  while [ -L "$target" ]; do
+    dir=$(cd -P -- "$(dirname -- "$target")" >/dev/null 2>&1 && pwd) || return 1
+    target=$(readlink "$target") || return 1
+    case "$target" in
+      /*) ;;
+      *) target="$dir/$target" ;;
+    esac
+  done
+
+  dir=$(cd -P -- "$(dirname -- "$target")" >/dev/null 2>&1 && pwd) || return 1
+  printf '%s/%s\n' "$dir" "$(basename -- "$target")"
+}
+
+
+script_path() {
+  local source=${BASH_SOURCE[0]}
+
+  case "$source" in
+    /*) ;;
+    */*) source="$PWD/$source" ;;
+    *) source=$(command -v -- "$source") || return 1 ;;
+  esac
+
+  resolve_path "$source"
+}
+
+
+find_real_codex() {
+  local old_ifs
+  local dir
+  local candidate
+  local resolved
+
+  if [ -n "${CODEX_REAL_BIN:-}" ]; then
+    [ -x "$CODEX_REAL_BIN" ] || die "CODEX_REAL_BIN is not executable: $CODEX_REAL_BIN"
+    printf '%s\n' "$CODEX_REAL_BIN"
+    return 0
+  fi
+
+  old_ifs=$IFS
+  IFS=:
+  for dir in $PATH; do
+    IFS=$old_ifs
+    [ -n "$dir" ] || dir=.
+    candidate="$dir/codex"
+
+    if [ ! -f "$candidate" ] || [ ! -x "$candidate" ]; then
+      IFS=:
+      continue
+    fi
+
+    if [ "$candidate" -ef "$SELF" ]; then
+      IFS=:
+      continue
+    fi
+
+    resolved=$(resolve_path "$candidate" 2>/dev/null || printf '%s\n' "$candidate")
+    if [ "$resolved" = "$SELF" ]; then
+      IFS=:
+      continue
+    fi
+
+    printf '%s\n' "$candidate"
+    IFS=$old_ifs
+    return 0
+  done
+  IFS=$old_ifs
+
+  die "could not find the real codex binary. Set CODEX_REAL_BIN=/path/to/codex."
+}
+
+
+find_watch_bin() {
+  local candidate
+
+  if [ -n "${CODEX_WATCH_BIN:-}" ]; then
+    [ -x "$CODEX_WATCH_BIN" ] || die "CODEX_WATCH_BIN is not executable: $CODEX_WATCH_BIN"
+    printf '%s\n' "$CODEX_WATCH_BIN"
+    return 0
+  fi
+
+  candidate="$SELF_DIR/codex-watch"
+  if [ -x "$candidate" ]; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+
+  candidate=$(command -v codex-watch 2>/dev/null || true)
+  if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+
+  die "could not find codex-watch. Install it next to this shim or set CODEX_WATCH_BIN."
+}
+
+
+run_codex_here() {
+  if [ "${CODEX_WATCH_DISABLE:-0}" = "1" ]; then
+    exec "$REAL_CODEX" "$@"
+  fi
+
+  exec "$WATCH_BIN" -- "$REAL_CODEX" "$@"
+}
+
+
+should_use_tmux() {
+  [ "${CODEX_SKIP_TMUX:-0}" != "1" ] || return 1
+  [ "${CODEX_TMUX:-1}" != "0" ] || return 1
+  [ -z "${TMUX:-}" ] || [ "${CODEX_TMUX_INSIDE:-0}" = "1" ] || return 1
+  [ -t 0 ] && [ -t 1 ] || return 1
+  command -v tmux >/dev/null 2>&1 || return 1
+  return 0
+}
+
+
+sh_quote() {
+  local value=$1
+
+  if [ -z "$value" ]; then
+    printf "''"
+    return 0
+  fi
+
+  printf "'"
+  while [ -n "$value" ]; do
+    case "$value" in
+      *"'"*)
+        printf "%s'\\''" "${value%%\'*}"
+        value=${value#*\'}
+        ;;
+      *)
+        printf "%s" "$value"
+        value=
+        ;;
+    esac
+  done
+  printf "'"
+}
+
+
+env_is_set() {
+  eval '[ "${'"$1"'+x}" = x ]'
+}
+
+
+env_value() {
+  eval 'printf "%s" "${'"$1"'}"'
+}
+
+
+emit_env_assignment() {
+  local name=$1
+  local value
+
+  if env_is_set "$name"; then
+    value=$(env_value "$name")
+    printf '%s=' "$name"
+    sh_quote "$value"
+    printf ' '
+  fi
+}
+
+
+build_tmux_command() {
+  local env_name
+
+  printf 'CODEX_SKIP_TMUX='
+  sh_quote '1'
+  printf ' '
+  printf 'CODEX_REAL_BIN='
+  sh_quote "$REAL_CODEX"
+  printf ' '
+
+  if [ -n "${WATCH_BIN:-}" ]; then
+    printf 'CODEX_WATCH_BIN='
+    sh_quote "$WATCH_BIN"
+    printf ' '
+  fi
+
+  for env_name in \
+    CODEX_WATCH_MATCH \
+    CODEX_WATCH_PATTERN \
+    CODEX_WATCH_REPLY \
+    CODEX_WATCH_COOLDOWN \
+    CODEX_WATCH_IDLE \
+    CODEX_WATCH_BUFFER \
+    CODEX_WATCH_DISABLE
+  do
+    emit_env_assignment "$env_name"
+  done
+
+  sh_quote "$SELF"
+
+  local arg
+  for arg in "$@"; do
+    printf ' '
+    sh_quote "$arg"
+  done
+}
+
+
+new_session_name() {
+  local prefix=${CODEX_TMUX_SESSION_PREFIX:-codex}
+  local base
+  local candidate
+  local n=1
+
+  prefix=${prefix//:/-}
+  base="${prefix}-$(date +%Y%m%d-%H%M%S)"
+  candidate=$base
+
+  while tmux has-session -t "$candidate" 2>/dev/null; do
+    candidate="${base}-${n}"
+    n=$((n + 1))
+  done
+
+  printf '%s\n' "$candidate"
+}
+
+
+start_new_tmux_session() {
+  local session_name
+  local command
+
+  session_name=${CODEX_TMUX_SESSION_NAME:-}
+  [ -n "$session_name" ] || session_name=$(new_session_name)
+
+  command=$(build_tmux_command "$@")
+  exec tmux new-session -c "$PWD" -s "$session_name" "$command"
+}
+
+
+choose_tmux_session() {
+  local sessions=()
+  local line
+  local i
+  local name
+  local windows
+  local attached
+  local choice
+
+  while IFS= read -r line; do
+    [ -n "$line" ] && sessions+=("$line")
+  done < <(tmux list-sessions -F '#{session_name}	#{session_windows}	#{session_attached}' 2>/dev/null || true)
+
+  if [ "${#sessions[@]}" -eq 0 ]; then
+    return 1
+  fi
+
+  printf 'Existing tmux sessions:\n'
+  for i in "${!sessions[@]}"; do
+    IFS=$'\t' read -r name windows attached <<<"${sessions[$i]}"
+    if [ "${attached:-0}" -gt 0 ]; then
+      printf '  %d) %s (%s windows, attached)\n' "$((i + 1))" "$name" "$windows"
+    else
+      printf '  %d) %s (%s windows, detached)\n' "$((i + 1))" "$name" "$windows"
+    fi
+  done
+  printf '  n) start new Codex tmux session\n'
+  printf '  r) run Codex here without tmux\n'
+  printf '  q) quit\n'
+
+  while true; do
+    printf 'Select tmux session [n]: '
+    IFS= read -r choice || return 1
+    choice=${choice:-n}
+
+    case "$choice" in
+      n|N)
+        return 1
+        ;;
+      r|R)
+        return 3
+        ;;
+      q|Q)
+        return 2
+        ;;
+      ''|*[!0-9]*)
+        printf 'Enter a number, n, r, or q.\n' >&2
+        ;;
+      *)
+        if [ "$choice" -ge 1 ] && [ "$choice" -le "${#sessions[@]}" ]; then
+          IFS=$'\t' read -r SELECTED_TMUX_SESSION _ <<<"${sessions[$((choice - 1))]}"
+          return 0
+        fi
+        printf 'No tmux session numbered %s.\n' "$choice" >&2
+        ;;
+    esac
+  done
+}
+
+
+SELF=$(script_path)
+SELF_DIR=$(dirname -- "$SELF")
+REAL_CODEX=$(find_real_codex)
+WATCH_BIN=
+if [ "${CODEX_WATCH_DISABLE:-0}" != "1" ]; then
+  WATCH_BIN=$(find_watch_bin)
+fi
+SELECTED_TMUX_SESSION=
+
+if should_use_tmux; then
+  choose_tmux_session
+  tmux_choice=$?
+
+  case "$tmux_choice" in
+    0)
+      exec tmux attach-session -t "$SELECTED_TMUX_SESSION"
+      ;;
+    1)
+      start_new_tmux_session "$@"
+      ;;
+    2)
+      exit 0
+      ;;
+    3)
+      run_codex_here "$@"
+      ;;
+  esac
+fi
+
+run_codex_here "$@"
