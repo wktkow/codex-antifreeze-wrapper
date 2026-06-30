@@ -47,8 +47,12 @@ Select tmux session [n]:
 ```
 
 If there are no running tmux sessions, it starts a new tmux session and runs the
-watched Codex command there. If tmux is unavailable or you are already inside
-tmux, it runs the watched Codex command in the current terminal.
+watched Codex command there. If you are already inside tmux, it runs the watched
+Codex command in the current terminal.
+
+For interactive terminals, tmux is expected by default. If tmux cannot be found,
+the shim exits with an error instead of silently running Codex outside tmux. Use
+`CODEX_TMUX=0 codex` when you intentionally want to run without tmux.
 
 Arguments still pass through:
 
@@ -79,6 +83,11 @@ It also treats frequent repeated unfreezes as a bug. By default it will send at
 most 3 automatic replies in 10 minutes, and it will never send replies less than
 120 seconds apart. Suppressed replies are printed as `codex-watch` status
 messages instead of being sent to Codex.
+
+Inside tmux, `Ctrl-b` then `d` detaches the session. Normally tmux handles that
+before the keypress reaches `codex-watch`; if it does reach the watcher, the
+watcher now treats it as a fallback detach hotkey and runs `tmux detach-client`.
+Set `CODEX_WATCH_NO_TMUX_DETACH_HOTKEY=1` to disable that fallback.
 
 You can also override those defaults from `~/.zshrc`:
 
@@ -131,6 +140,12 @@ Use a custom tmux session prefix:
 CODEX_TMUX_SESSION_PREFIX=codex-work codex
 ```
 
+Use a specific tmux binary if it is installed outside `PATH`:
+
+```sh
+CODEX_TMUX_BIN=/opt/homebrew/bin/tmux codex
+```
+
 ## Use `codex-watch` Directly
 
 Run `codex` through the watcher:
@@ -162,6 +177,8 @@ codex-watch --match 'your exact matching text here' --reply 'your unfreeze strin
 --idle SECONDS         Also send the reply after this many seconds without output.
 --buffer CHARS         Recent output characters kept for regex matching.
 --no-strip-ansi        Match against raw terminal output including ANSI escapes.
+--no-tmux-detach-hotkey
+                       Do not intercept Ctrl-b then d as tmux detach inside tmux.
 ```
 
 The `codex` shim also reads these environment variables:
@@ -175,7 +192,10 @@ CODEX_WATCH_REPLY           Input to send when triggered.
 CODEX_WATCH_COOLDOWN        Minimum seconds between automatic replies.
 CODEX_WATCH_MAX_UNFREEZES   Maximum automatic replies allowed per window.
 CODEX_WATCH_WINDOW          Circuit breaker window in seconds.
+CODEX_WATCH_NO_TMUX_DETACH_HOTKEY
+                              Disable the Ctrl-b then d fallback detach hotkey.
 CODEX_TMUX=0                Do not use tmux.
+CODEX_TMUX_BIN              tmux binary path.
 CODEX_TMUX_INSIDE=1         Allow tmux selection even from inside tmux.
 CODEX_TMUX_SESSION_NAME     Exact session name for a new tmux session.
 CODEX_TMUX_SESSION_PREFIX   Prefix for generated tmux session names.

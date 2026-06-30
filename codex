@@ -109,6 +109,48 @@ find_watch_bin() {
 }
 
 
+find_tmux_bin() {
+  local candidate
+  local brew_prefix
+
+  if [ -n "${CODEX_TMUX_BIN:-}" ]; then
+    [ -x "$CODEX_TMUX_BIN" ] || die "CODEX_TMUX_BIN is not executable: $CODEX_TMUX_BIN"
+    printf '%s\n' "$CODEX_TMUX_BIN"
+    return 0
+  fi
+
+  candidate=$(command -v tmux 2>/dev/null || true)
+  if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+
+  for candidate in \
+    /opt/homebrew/bin/tmux \
+    /opt/homebrew/opt/tmux/bin/tmux \
+    /usr/local/bin/tmux \
+    /usr/bin/tmux \
+    /bin/tmux
+  do
+    if [ -x "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  if command -v brew >/dev/null 2>&1; then
+    brew_prefix=$(brew --prefix tmux 2>/dev/null || true)
+    candidate="$brew_prefix/bin/tmux"
+    if [ -n "$brew_prefix" ] && [ -x "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
+
 run_codex_here() {
   if [ "${CODEX_WATCH_DISABLE:-0}" = "1" ]; then
     exec "$REAL_CODEX" "$@"
@@ -123,7 +165,11 @@ should_use_tmux() {
   [ "${CODEX_TMUX:-1}" != "0" ] || return 1
   [ -z "${TMUX:-}" ] || [ "${CODEX_TMUX_INSIDE:-0}" = "1" ] || return 1
   [ -t 0 ] && [ -t 1 ] || return 1
-  command -v tmux >/dev/null 2>&1 || return 1
+
+  if [ -z "${TMUX_BIN:-}" ]; then
+    die "tmux is required but was not found. Install tmux, set CODEX_TMUX_BIN, or run CODEX_TMUX=0 codex."
+  fi
+
   return 0
 }
 
@@ -186,6 +232,15 @@ build_tmux_command() {
   sh_quote "$REAL_CODEX"
   printf ' '
 
+  if [ -n "${TMUX_BIN:-}" ]; then
+    printf 'CODEX_TMUX_BIN='
+    sh_quote "$TMUX_BIN"
+    printf ' '
+    printf 'CODEX_WATCH_TMUX_BIN='
+    sh_quote "$TMUX_BIN"
+    printf ' '
+  fi
+
   if [ -n "${WATCH_BIN:-}" ]; then
     printf 'CODEX_WATCH_BIN='
     sh_quote "$WATCH_BIN"
@@ -201,6 +256,7 @@ build_tmux_command() {
     CODEX_WATCH_WINDOW \
     CODEX_WATCH_IDLE \
     CODEX_WATCH_BUFFER \
+    CODEX_WATCH_NO_TMUX_DETACH_HOTKEY \
     CODEX_WATCH_DISABLE
   do
     emit_env_assignment "$env_name"
@@ -226,7 +282,7 @@ new_session_name() {
   base="${prefix}-$(date +%Y%m%d-%H%M%S)"
   candidate=$base
 
-  while tmux has-session -t "$candidate" 2>/dev/null; do
+  while "$TMUX_BIN" has-session -t "$candidate" 2>/dev/null; do
     candidate="${base}-${n}"
     n=$((n + 1))
   done
@@ -243,7 +299,7 @@ start_new_tmux_session() {
   [ -n "$session_name" ] || session_name=$(new_session_name)
 
   command=$(build_tmux_command "$@")
-  exec tmux new-session -c "$PWD" -s "$session_name" "$command"
+  exec "$TMUX_BIN" new-session -c "$PWD" -s "$session_name" "$command"
 }
 
 
@@ -258,7 +314,7 @@ choose_tmux_session() {
 
   while IFS= read -r line; do
     [ -n "$line" ] && sessions+=("$line")
-  done < <(tmux list-sessions -F '#{session_name}	#{session_windows}	#{session_attached}' 2>/dev/null || true)
+  done < <("$TMUX_BIN" list-sessions -F '#{session_name}	#{session_windows}	#{session_attached}' 2>/dev/null || true)
 
   if [ "${#sessions[@]}" -eq 0 ]; then
     return 1
@@ -309,10 +365,19 @@ choose_tmux_session() {
 
 SELF=$(script_path)
 SELF_DIR=$(dirname -- "$SELF")
-REAL_CODEX=$(find_real_codex)
+REAL_CODEX=$(find_real_codex) || exit $?
 WATCH_BIN=
 if [ "${CODEX_WATCH_DISABLE:-0}" != "1" ]; then
-  WATCH_BIN=$(find_watch_bin)
+  WATCH_BIN=$(find_watch_bin) || exit $?
+fi
+
+TMUX_BIN=$(find_tmux_bin)
+tmux_find_status=$?
+if [ "$tmux_find_status" -ne 0 ]; then
+  if [ -n "${CODEX_TMUX_BIN:-}" ]; then
+    exit "$tmux_find_status"
+  fi
+  TMUX_BIN=
 fi
 SELECTED_TMUX_SESSION=
 
@@ -322,7 +387,7 @@ if should_use_tmux; then
 
   case "$tmux_choice" in
     0)
-      exec tmux attach-session -t "$SELECTED_TMUX_SESSION"
+      exec "$TMUX_BIN" attach-session -t "$SELECTED_TMUX_SESSION"
       ;;
     1)
       start_new_tmux_session "$@"
