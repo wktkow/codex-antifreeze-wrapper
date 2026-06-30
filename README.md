@@ -86,8 +86,9 @@ submit = ["enter", "ctrl-x"]
 ```
 
 After firing, the watcher latches the match so the same emitted text does not
-cause a tight reply loop. It rearms after later output no longer contains the
-match text.
+cause a tight reply loop. If the match stays visible, it retries after the
+cooldown instead of waiting forever for the text to disappear. It rearms early
+when later output no longer contains the match text.
 
 It also treats frequent repeated unfreezes as a bug. By default it will send at
 most 3 automatic replies in 10 minutes, and it will never send replies less than
