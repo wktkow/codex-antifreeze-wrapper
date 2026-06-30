@@ -58,15 +58,27 @@ codex --some-codex-flag
 
 ## Configure
 
-The simplest setup is to edit these two values at the top of `codex-watch`:
+The simplest setup is to edit these values at the top of `codex-watch`:
 
 ```python
 TYPE_IN = "your unfreeze string here"
 WHEN_OUTPUT_CONTAINS = "your exact matching text here"
+MIN_SECONDS_BETWEEN_UNFREEZES = 120
+MAX_UNFREEZES_PER_WINDOW = 3
+UNFREEZE_WINDOW_SECONDS = 600
 ```
 
 `WHEN_OUTPUT_CONTAINS` is a plain substring match, not a regex. `TYPE_IN` is
 typed into Codex and then Return is sent.
+
+After firing, the watcher latches the match so the same emitted text does not
+cause a tight reply loop. It rearms after later output no longer contains the
+match text.
+
+It also treats frequent repeated unfreezes as a bug. By default it will send at
+most 3 automatic replies in 10 minutes, and it will never send replies less than
+120 seconds apart. Suppressed replies are printed as `codex-watch` status
+messages instead of being sent to Codex.
 
 You can also override those defaults from `~/.zshrc`:
 
@@ -74,6 +86,8 @@ You can also override those defaults from `~/.zshrc`:
 export CODEX_WATCH_MATCH='your exact matching text here'
 export CODEX_WATCH_REPLY='your unfreeze string here'
 export CODEX_WATCH_COOLDOWN=120
+export CODEX_WATCH_MAX_UNFREEZES=3
+export CODEX_WATCH_WINDOW=600
 ```
 
 To send only Enter when the match text appears, leave the reply empty:
@@ -143,6 +157,8 @@ codex-watch --match 'your exact matching text here' --reply 'your unfreeze strin
 --match TEXT           Plain output text to watch for. Defaults to CODEX_WATCH_MATCH or WHEN_OUTPUT_CONTAINS.
 --reply REPLY          Input to send when triggered. Defaults to CODEX_WATCH_REPLY or TYPE_IN.
 --cooldown SECONDS     Minimum seconds between automatic replies.
+--max-unfreezes COUNT  Maximum automatic replies allowed within --window. Use 0 to disable.
+--window SECONDS       Seconds used for the repeated-unfreeze circuit breaker.
 --idle SECONDS         Also send the reply after this many seconds without output.
 --buffer CHARS         Recent output characters kept for regex matching.
 --no-strip-ansi        Match against raw terminal output including ANSI escapes.
@@ -155,6 +171,10 @@ CODEX_REAL_BIN              Real Codex binary path.
 CODEX_WATCH_BIN             codex-watch path.
 CODEX_WATCH_DISABLE=1       Run real Codex directly.
 CODEX_WATCH_MATCH           Plain output text to watch for.
+CODEX_WATCH_REPLY           Input to send when triggered.
+CODEX_WATCH_COOLDOWN        Minimum seconds between automatic replies.
+CODEX_WATCH_MAX_UNFREEZES   Maximum automatic replies allowed per window.
+CODEX_WATCH_WINDOW          Circuit breaker window in seconds.
 CODEX_TMUX=0                Do not use tmux.
 CODEX_TMUX_INSIDE=1         Allow tmux selection even from inside tmux.
 CODEX_TMUX_SESSION_NAME     Exact session name for a new tmux session.
