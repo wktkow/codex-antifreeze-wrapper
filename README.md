@@ -71,8 +71,8 @@ SUBMIT_KEY = "ctrl-m"
 USE_BRACKETED_PASTE = True
 TYPE_KEY_DELAY_SECONDS = 0.015
 SUBMIT_DELAY_SECONDS = 0.15
-MIN_SECONDS_BETWEEN_UNFREEZES = 30
-MAX_UNFREEZES_PER_WINDOW = 3
+MIN_SECONDS_BETWEEN_UNFREEZES = 15
+MAX_UNFREEZES_PER_WINDOW = 0
 UNFREEZE_WINDOW_SECONDS = 600
 ```
 
@@ -102,10 +102,10 @@ cause a tight reply loop. If the match stays visible, it retries after the
 cooldown instead of waiting forever for the text to disappear. It rearms early
 when later output no longer contains the match text.
 
-It also treats frequent repeated unfreezes as a bug. By default it will send at
-most 3 automatic replies in 10 minutes, and it will never send replies less than
-30 seconds apart. Suppressed replies are printed as `codex-watch` status
-messages instead of being sent to Codex.
+By default it will never send replies less than 15 seconds apart. The repeated
+unfreeze circuit breaker is disabled with `MAX_UNFREEZES_PER_WINDOW = 0`.
+Suppressed cooldown replies are printed as `codex-watch` status messages instead
+of being sent to Codex.
 
 Inside tmux, `Ctrl-b` then `d` detaches the session. Normally tmux handles that
 before the keypress reaches `codex-watch`; if it does reach the watcher, the
@@ -121,8 +121,8 @@ export CODEX_WATCH_SUBMIT_KEY=ctrl-m
 export CODEX_WATCH_NO_BRACKETED_PASTE=0
 export CODEX_WATCH_TYPE_DELAY=0.015
 export CODEX_WATCH_SUBMIT_DELAY=0.15
-export CODEX_WATCH_COOLDOWN=30
-export CODEX_WATCH_MAX_UNFREEZES=3
+export CODEX_WATCH_COOLDOWN=15
+export CODEX_WATCH_MAX_UNFREEZES=0
 export CODEX_WATCH_WINDOW=600
 ```
 
@@ -184,7 +184,7 @@ CODEX_WATCH_SUBMIT_KEY=ctrl-m \
 CODEX_WATCH_NO_BRACKETED_PASTE=0 \
 CODEX_WATCH_TYPE_DELAY=0.015 \
 CODEX_WATCH_SUBMIT_DELAY=0.15 \
-CODEX_WATCH_COOLDOWN=30 \
+CODEX_WATCH_COOLDOWN=15 \
 codex-watch -- codex
 ```
 
@@ -209,7 +209,7 @@ codex-watch --match 'your exact matching text here' --reply 'your unfreeze strin
                        Seconds to wait between --reply and --submit-key.
 --cooldown SECONDS     Minimum seconds between automatic replies.
 --max-unfreezes COUNT  Maximum automatic replies allowed within --window. Use 0 to disable.
---window SECONDS       Seconds used for the repeated-unfreeze circuit breaker.
+--window SECONDS       Seconds used for the repeated-unfreeze circuit breaker when --max-unfreezes is above 0.
 --idle SECONDS         Also send the reply after this many seconds without output.
 --buffer CHARS         Recent output characters kept for regex matching.
 --no-strip-ansi        Match against raw terminal output including ANSI escapes.
@@ -231,7 +231,7 @@ CODEX_WATCH_NO_BRACKETED_PASTE
 CODEX_WATCH_TYPE_DELAY      Seconds to wait between bytes of CODEX_WATCH_REPLY.
 CODEX_WATCH_SUBMIT_DELAY    Seconds to wait before CODEX_WATCH_SUBMIT_KEY.
 CODEX_WATCH_COOLDOWN        Minimum seconds between automatic replies.
-CODEX_WATCH_MAX_UNFREEZES   Maximum automatic replies allowed per window.
+CODEX_WATCH_MAX_UNFREEZES   Maximum automatic replies allowed per window. Use 0 to disable.
 CODEX_WATCH_WINDOW          Circuit breaker window in seconds.
 CODEX_WATCH_NO_TMUX_DETACH_HOTKEY
                               Disable the Ctrl-b then d fallback detach hotkey.

@@ -11,9 +11,8 @@ USE_BRACKETED_PASTE = True
 TYPE_KEY_DELAY_SECONDS = 0.015
 SUBMIT_DELAY_SECONDS = 0.15
 
-# Treat repeated unfreezes as a bug, not as normal operation.
-MIN_SECONDS_BETWEEN_UNFREEZES = 30
-MAX_UNFREEZES_PER_WINDOW = 3
+MIN_SECONDS_BETWEEN_UNFREEZES = 15
+MAX_UNFREEZES_PER_WINDOW = 0
 UNFREEZE_WINDOW_SECONDS = 600
 
 # Fallback tmux detach hotkey. Normally tmux catches Ctrl-b then d itself; this
@@ -170,7 +169,7 @@ def parse_args():
         "--window",
         type=float,
         default=env_float("CODEX_WATCH_WINDOW", UNFREEZE_WINDOW_SECONDS),
-        help="Seconds used for the repeated-unfreeze circuit breaker.",
+        help="Seconds used for the repeated-unfreeze circuit breaker when --max-unfreezes is above 0.",
     )
     parser.add_argument(
         "--idle",
