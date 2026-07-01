@@ -7,6 +7,7 @@
 TYPE_IN = "/goal resume"
 WHEN_OUTPUT_CONTAINS = "Goal blocked"
 SUBMIT_KEY = "ctrl-m"
+USE_BRACKETED_PASTE = True
 TYPE_KEY_DELAY_SECONDS = 0.015
 SUBMIT_DELAY_SECONDS = 0.15
 
@@ -128,6 +129,12 @@ def parse_args():
         "--submit-key",
         default=env_or_default("CODEX_WATCH_SUBMIT_KEY", SUBMIT_KEY),
         help="Key sequence sent after --reply. Defaults to CODEX_WATCH_SUBMIT_KEY or SUBMIT_KEY.",
+    )
+    parser.add_argument(
+        "--no-bracketed-paste",
+        action="store_true",
+        default=env_bool("CODEX_WATCH_NO_BRACKETED_PASTE", not USE_BRACKETED_PASTE),
+        help="Type --reply as key bytes instead of using terminal bracketed paste.",
     )
     parser.add_argument(
         "--type-delay",
@@ -387,7 +394,9 @@ def main() -> int:
 
         try:
             reply = args.reply.encode(errors="ignore")
-            if args.type_delay > 0:
+            if reply and not args.no_bracketed_paste:
+                os.write(master_fd, b"\x1b[200~" + reply + b"\x1b[201~")
+            elif args.type_delay > 0:
                 for byte in reply:
                     os.write(master_fd, bytes([byte]))
                     time.sleep(args.type_delay)

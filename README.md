@@ -68,6 +68,7 @@ The simplest setup is to edit these values at the top of `codex-watch`:
 TYPE_IN = "your unfreeze string here"
 WHEN_OUTPUT_CONTAINS = "your exact matching text here"
 SUBMIT_KEY = "ctrl-m"
+USE_BRACKETED_PASTE = True
 TYPE_KEY_DELAY_SECONDS = 0.015
 SUBMIT_DELAY_SECONDS = 0.15
 MIN_SECONDS_BETWEEN_UNFREEZES = 30
@@ -80,9 +81,10 @@ typed into Codex and then `SUBMIT_KEY` is sent. The default is `ctrl-m` because
 the wrapper sends a raw carriage-return byte; Codex must bind that byte to
 submit instead of treating it as an editor newline.
 
-The typing and submit delays avoid Codex treating the reply plus submit key as
-one paste-like burst. Keep `SUBMIT_DELAY_SECONDS` above 0.12 seconds unless you
-have verified the submit key still fires reliably.
+By default, the reply is inserted with terminal bracketed paste so slash
+commands with arguments, such as `/goal resume`, arrive in Codex as one complete
+composer update. `SUBMIT_DELAY_SECONDS` then gives Codex time to process that
+paste before the submit key is sent.
 
 Make sure Codex has `ctrl-m` bound as a submit key and removed from editor
 newline bindings:
@@ -116,6 +118,7 @@ You can also override those defaults from `~/.zshrc`:
 export CODEX_WATCH_MATCH='your exact matching text here'
 export CODEX_WATCH_REPLY='your unfreeze string here'
 export CODEX_WATCH_SUBMIT_KEY=ctrl-m
+export CODEX_WATCH_NO_BRACKETED_PASTE=0
 export CODEX_WATCH_TYPE_DELAY=0.015
 export CODEX_WATCH_SUBMIT_DELAY=0.15
 export CODEX_WATCH_COOLDOWN=30
@@ -178,6 +181,7 @@ Run `codex` through the watcher:
 CODEX_WATCH_PATTERN='Press Enter|stalled|frozen|your exact matching text here' \
 CODEX_WATCH_REPLY='your unfreeze string here' \
 CODEX_WATCH_SUBMIT_KEY=ctrl-m \
+CODEX_WATCH_NO_BRACKETED_PASTE=0 \
 CODEX_WATCH_TYPE_DELAY=0.015 \
 CODEX_WATCH_SUBMIT_DELAY=0.15 \
 CODEX_WATCH_COOLDOWN=30 \
@@ -199,6 +203,7 @@ codex-watch --match 'your exact matching text here' --reply 'your unfreeze strin
 --match TEXT           Plain output text to watch for. Defaults to CODEX_WATCH_MATCH or WHEN_OUTPUT_CONTAINS.
 --reply REPLY          Input to send when triggered. Defaults to CODEX_WATCH_REPLY or TYPE_IN.
 --submit-key KEY       Key sequence sent after --reply. Defaults to CODEX_WATCH_SUBMIT_KEY or SUBMIT_KEY.
+--no-bracketed-paste   Type --reply as key bytes instead of using terminal bracketed paste.
 --type-delay SECONDS   Seconds to wait between bytes of --reply.
 --submit-delay SECONDS
                        Seconds to wait between --reply and --submit-key.
@@ -221,6 +226,8 @@ CODEX_WATCH_DISABLE=1       Run real Codex directly.
 CODEX_WATCH_MATCH           Plain output text to watch for.
 CODEX_WATCH_REPLY           Input to send when triggered.
 CODEX_WATCH_SUBMIT_KEY      Key sequence sent after CODEX_WATCH_REPLY.
+CODEX_WATCH_NO_BRACKETED_PASTE
+                              Type CODEX_WATCH_REPLY as key bytes instead of bracketed paste.
 CODEX_WATCH_TYPE_DELAY      Seconds to wait between bytes of CODEX_WATCH_REPLY.
 CODEX_WATCH_SUBMIT_DELAY    Seconds to wait before CODEX_WATCH_SUBMIT_KEY.
 CODEX_WATCH_COOLDOWN        Minimum seconds between automatic replies.
