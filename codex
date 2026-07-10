@@ -8,6 +8,128 @@ die() {
 }
 
 
+is_linux() {
+  [ "$(uname -s 2>/dev/null)" = "Linux" ]
+}
+
+
+tmux_will_be_used() {
+  [ "${CODEX_SKIP_TMUX:-0}" != "1" ] || return 1
+  [ "${CODEX_TMUX:-1}" != "0" ] || return 1
+  [ -z "${TMUX:-}" ] || [ "${CODEX_TMUX_INSIDE:-0}" = "1" ] || return 1
+  [ -t 0 ] && [ -t 1 ]
+}
+
+
+watch_requires_python3() {
+  local shebang
+
+  [ -n "${WATCH_BIN:-}" ] || return 1
+  IFS= read -r shebang < "$WATCH_BIN" || return 1
+
+  case "$shebang" in
+    '#!'*python3*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+
+linux_install_command() {
+  local packages=("$@")
+
+  if [ "${EUID:-$(id -u)}" -eq 0 ]; then
+    printf 'apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y'
+  else
+    printf 'sudo apt-get update && sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y'
+  fi
+
+  printf ' %s' "${packages[@]}"
+}
+
+
+ensure_linux_dependencies() {
+  local packages=()
+  local choice
+  local install_label
+  local installer=()
+
+  is_linux || return 0
+  [ "${CODEX_LINUX_DEP_CHECK:-1}" != "0" ] || return 0
+
+  if watch_requires_python3 && ! command -v python3 >/dev/null 2>&1; then
+    packages+=(python3)
+  fi
+
+  if tmux_will_be_used && [ -z "${TMUX_BIN:-}" ]; then
+    packages+=(tmux)
+  fi
+
+  [ "${#packages[@]}" -gt 0 ] || return 0
+
+  printf 'codex wrapper: missing Linux dependencies: %s\n' "${packages[*]}" >&2
+
+  if ! command -v apt-get >/dev/null 2>&1; then
+    die "automatic installation requires apt-get. Install manually: ${packages[*]}"
+  fi
+
+  if [ ! -t 0 ] || [ ! -t 1 ]; then
+    die "cannot prompt in a non-interactive terminal. Run: $(linux_install_command "${packages[@]}")"
+  fi
+
+  if [ "${EUID:-$(id -u)}" -eq 0 ]; then
+    install_label='apt-get'
+  else
+    command -v sudo >/dev/null 2>&1 || die "sudo was not found. Install manually: ${packages[*]}"
+    install_label='sudo apt-get'
+  fi
+
+  printf 'Install them now with %s?\n' "$install_label" >&2
+  printf '  y) yes\n' >&2
+  printf '  n) no\n' >&2
+
+  while true; do
+    printf 'Select [n]: ' >&2
+    IFS= read -r choice || choice=n
+
+    case "$choice" in
+      y|Y|yes|YES|Yes)
+        break
+        ;;
+      ''|n|N|no|NO|No)
+        die "dependencies were not installed. Run: $(linux_install_command "${packages[@]}")"
+        ;;
+      *)
+        printf 'Enter y or n.\n' >&2
+        ;;
+    esac
+  done
+
+  if [ "${EUID:-$(id -u)}" -eq 0 ]; then
+    installer=(apt-get)
+  else
+    installer=(sudo apt-get)
+  fi
+
+  "${installer[@]}" update || die "apt-get update failed"
+
+  if [ "${EUID:-$(id -u)}" -eq 0 ]; then
+    DEBIAN_FRONTEND=noninteractive apt-get install -y "${packages[@]}" ||
+      die "dependency installation failed"
+  else
+    sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y "${packages[@]}" ||
+      die "dependency installation failed"
+  fi
+
+  if watch_requires_python3 && ! command -v python3 >/dev/null 2>&1; then
+    die "python3 is still unavailable after installation"
+  fi
+
+  if tmux_will_be_used && ! command -v tmux >/dev/null 2>&1; then
+    die "tmux is still unavailable after installation"
+  fi
+}
+
+
 resolve_path() {
   local target=$1
   local dir
@@ -161,10 +283,7 @@ run_codex_here() {
 
 
 should_use_tmux() {
-  [ "${CODEX_SKIP_TMUX:-0}" != "1" ] || return 1
-  [ "${CODEX_TMUX:-1}" != "0" ] || return 1
-  [ -z "${TMUX:-}" ] || [ "${CODEX_TMUX_INSIDE:-0}" = "1" ] || return 1
-  [ -t 0 ] && [ -t 1 ] || return 1
+  tmux_will_be_used || return 1
 
   if [ -z "${TMUX_BIN:-}" ]; then
     die "tmux is required but was not found. Install tmux, set CODEX_TMUX_BIN, or run CODEX_TMUX=0 codex."
@@ -258,7 +377,8 @@ build_tmux_command() {
     CODEX_WATCH_IDLE \
     CODEX_WATCH_BUFFER \
     CODEX_WATCH_NO_TMUX_DETACH_HOTKEY \
-    CODEX_WATCH_DISABLE
+    CODEX_WATCH_DISABLE \
+    CODEX_LINUX_DEP_CHECK
   do
     emit_env_assignment "$env_name"
   done
@@ -380,6 +500,13 @@ if [ "$tmux_find_status" -ne 0 ]; then
   fi
   TMUX_BIN=
 fi
+
+ensure_linux_dependencies
+
+if [ -z "$TMUX_BIN" ] && tmux_will_be_used; then
+  TMUX_BIN=$(find_tmux_bin) || exit $?
+fi
+
 SELECTED_TMUX_SESSION=
 
 if should_use_tmux; then

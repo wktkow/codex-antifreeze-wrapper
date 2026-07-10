@@ -28,6 +28,27 @@ echo 'export PATH="$HOME/bin:$PATH"' >> ~/.zshrc
 source ~/.zshrc
 ```
 
+On Pop!_OS, Ubuntu, and other systems using Bash by default, use `~/.bashrc`
+instead:
+
+```sh
+echo 'export PATH="$HOME/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+On Linux, the shim checks for the dependencies needed by the current invocation.
+If `python3` or `tmux` is missing on an apt-based system, an interactive run
+offers to install the missing packages with `sudo apt-get`. `sudo` handles the
+password prompt directly. Package configuration uses Debian's non-interactive
+frontend so the install cannot stall on an additional configuration question.
+The default answer is no, and non-interactive runs never install packages
+automatically; they print the command to run instead.
+
+The tmux check is skipped when tmux will not be used, such as with
+`CODEX_TMUX=0 codex`. The Python check is skipped when the watcher is disabled
+with `CODEX_WATCH_DISABLE=1`. To disable the Linux dependency check entirely,
+set `CODEX_LINUX_DEP_CHECK=0`.
+
 Now this launches the shim:
 
 ```sh
@@ -240,4 +261,5 @@ CODEX_TMUX_BIN              tmux binary path.
 CODEX_TMUX_INSIDE=1         Allow tmux selection even from inside tmux.
 CODEX_TMUX_SESSION_NAME     Exact session name for a new tmux session.
 CODEX_TMUX_SESSION_PREFIX   Prefix for generated tmux session names.
+CODEX_LINUX_DEP_CHECK=0     Disable the Linux dependency check and install prompt.
 ```
