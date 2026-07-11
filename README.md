@@ -7,6 +7,11 @@ your input/output normally, and watches the output for configured text. When the
 text matches, it sends a configured reply followed by a submit key. It can also
 send the reply after an idle timeout.
 
+In parallel with that configurable match/reply mode, the watcher recognizes the
+complete additional-safety-checks prompt. If all three prompt strings are
+present in recent terminal output, it sends a bare Return key to select **Keep
+waiting**. This does not type the normal configured reply.
+
 The `codex` shim is the command you put earlier on your `PATH`. It replaces the
 terminal entrypoint, finds the real `codex` binary, offers to attach to existing
 tmux sessions, and launches new Codex sessions through `codex-watch`.
@@ -145,6 +150,8 @@ export CODEX_WATCH_SUBMIT_DELAY=0.15
 export CODEX_WATCH_COOLDOWN=15
 export CODEX_WATCH_MAX_UNFREEZES=0
 export CODEX_WATCH_WINDOW=600
+export CODEX_WATCH_NO_SAFETY_CHECK_RETURN=0
+export CODEX_WATCH_SAFETY_CHECK_COOLDOWN=4
 ```
 
 To send only the submit key when the match text appears, leave the reply empty:
@@ -161,6 +168,19 @@ export CODEX_WATCH_IDLE=1800
 
 Use very specific match text; broad matches can accidentally answer prompts you
 did not intend to answer.
+
+The safety-check Return mode is enabled by default and requires all of these
+exact strings before it fires:
+
+```text
+Additional safety checks
+This request requires additional safety checks, which can take extra time.
+Keep waiting
+```
+
+It has a separate cooldown from normal automatic replies, so both modes remain
+active independently. Set `CODEX_WATCH_NO_SAFETY_CHECK_RETURN=1` (or pass
+`--no-safety-check-return`) to disable it.
 
 ## Bypass
 
@@ -232,6 +252,10 @@ codex-watch --match 'your exact matching text here' --reply 'your unfreeze strin
 --max-unfreezes COUNT  Maximum automatic replies allowed within --window. Use 0 to disable.
 --window SECONDS       Seconds used for the repeated-unfreeze circuit breaker when --max-unfreezes is above 0.
 --idle SECONDS         Also send the reply after this many seconds without output.
+--no-safety-check-return
+                       Do not press Return for the complete additional-safety-checks prompt.
+--safety-check-cooldown SECONDS
+                       Minimum seconds between safety-check Return keypresses.
 --buffer CHARS         Recent output characters kept for regex matching.
 --no-strip-ansi        Match against raw terminal output including ANSI escapes.
 --no-tmux-detach-hotkey
@@ -254,6 +278,10 @@ CODEX_WATCH_SUBMIT_DELAY    Seconds to wait before CODEX_WATCH_SUBMIT_KEY.
 CODEX_WATCH_COOLDOWN        Minimum seconds between automatic replies.
 CODEX_WATCH_MAX_UNFREEZES   Maximum automatic replies allowed per window. Use 0 to disable.
 CODEX_WATCH_WINDOW          Circuit breaker window in seconds.
+CODEX_WATCH_NO_SAFETY_CHECK_RETURN
+                              Disable automatic Return for the complete safety-check prompt.
+CODEX_WATCH_SAFETY_CHECK_COOLDOWN
+                              Minimum seconds between safety-check Return keypresses.
 CODEX_WATCH_NO_TMUX_DETACH_HOTKEY
                               Disable the Ctrl-b then d fallback detach hotkey.
 CODEX_TMUX=0                Do not use tmux.
