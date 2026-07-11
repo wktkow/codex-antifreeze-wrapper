@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# codex-antifreeze-shit-wrapper managed executable
+# codex-antifreeze-wrapper managed executable
 set -u
 
 

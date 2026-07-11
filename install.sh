@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="wktkow/codex-antibug-shit-wrapper"
+REPO="wktkow/codex-antifreeze-wrapper"
 REF=${CODEX_WRAPPER_REF:-main}
 INSTALL_DIR=${CODEX_WRAPPER_INSTALL_DIR:-"$HOME/.local/bin"}
-MARKER_START="# >>> codex-antifreeze-shit-wrapper >>>"
-MARKER_END="# <<< codex-antifreeze-shit-wrapper <<<"
+MARKER_START="# >>> codex-antifreeze-wrapper >>>"
+MARKER_END="# <<< codex-antifreeze-wrapper <<<"
+LEGACY_MARKER_START="# >>> codex-antifreeze-shit-wrapper >>>"
+LEGACY_MARKER_END="# <<< codex-antifreeze-shit-wrapper <<<"
 KEYMAP_MARKER_START="# >>> codex-antifreeze keymap >>>"
 KEYMAP_MARKER_END="# <<< codex-antifreeze keymap <<<"
 REAL_CODEX_PATH=""
@@ -23,6 +25,8 @@ is_managed_wrapper() {
   local candidate=$1
 
   [ -f "$candidate" ] || return 1
+  grep -Fq 'codex-antifreeze-wrapper managed executable' "$candidate" 2>/dev/null &&
+    return 0
   grep -Fq 'codex-antifreeze-shit-wrapper managed executable' "$candidate" 2>/dev/null &&
     return 0
   grep -Fq 'find_real_codex()' "$candidate" 2>/dev/null &&
@@ -303,16 +307,29 @@ write_alias_block() {
   local alias_line=$1
   local config_file=$2
   local line
+  local legacy_present=0
+  local new_present=0
   local skipping=0
   local temp_file
+  local wrote_block=0
 
   if managed_block_present "$config_file" "$MARKER_START" "$MARKER_END"; then
+    new_present=1
+  fi
+  if managed_block_present "$config_file" "$LEGACY_MARKER_START" "$LEGACY_MARKER_END"; then
+    legacy_present=1
+  fi
+
+  if [ "$new_present" -eq 1 ] || [ "$legacy_present" -eq 1 ]; then
     temp_file=$(mktemp "${config_file}.tmp.XXXXXX")
     while IFS= read -r line || [ -n "$line" ]; do
-      if [ "$line" = "$MARKER_START" ]; then
-        printf '%s\n%s\n%s\n' "$MARKER_START" "$alias_line" "$MARKER_END" >>"$temp_file"
+      if [ "$line" = "$MARKER_START" ] || [ "$line" = "$LEGACY_MARKER_START" ]; then
+        if [ "$wrote_block" -eq 0 ]; then
+          printf '%s\n%s\n%s\n' "$MARKER_START" "$alias_line" "$MARKER_END" >>"$temp_file"
+          wrote_block=1
+        fi
         skipping=1
-      elif [ "$line" = "$MARKER_END" ]; then
+      elif [ "$line" = "$MARKER_END" ] || [ "$line" = "$LEGACY_MARKER_END" ]; then
         skipping=0
       elif [ "$skipping" -eq 0 ]; then
         printf '%s\n' "$line" >>"$temp_file"
