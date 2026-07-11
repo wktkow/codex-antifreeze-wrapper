@@ -13,29 +13,16 @@ The two automatic actions are independent and protected by separate cooldowns.
 
 ## Install
 
-Requirements: Codex, Python 3, and tmux.
+The real Codex CLI must already be installed. Then run:
 
 ```sh
-git clone https://github.com/wktkow/codex-antibug-shit-wrapper.git
-cd codex-antibug-shit-wrapper
-mkdir -p "$HOME/bin"
-install -m 755 codex codex-watch "$HOME/bin/"
+curl -fsSL https://raw.githubusercontent.com/wktkow/codex-antibug-shit-wrapper/main/install.sh | bash
 ```
 
-Recommended: alias `codex` to the wrapper in your shell config.
-
-```sh
-# Bash
-echo 'alias codex="$HOME/bin/codex"' >> ~/.bashrc
-source ~/.bashrc
-
-# Zsh
-echo 'alias codex="$HOME/bin/codex"' >> ~/.zshrc
-source ~/.zshrc
-```
-
-Use only the pair for your shell. Alternatively, put `~/bin` before the real
-Codex binary on your `PATH` with `export PATH="$HOME/bin:$PATH"`.
+The installer supports Ubuntu-based Linux and macOS. It installs the wrapper in
+`~/.local/bin`, installs missing Python/tmux dependencies with apt or Homebrew,
+detects Bash, Zsh, and Fish configs, and asks before overriding the interactive
+`codex` command with a shell-compatible alias. It is safe to rerun.
 
 Codex must treat `Ctrl-M` as submit. Add this to `~/.codex/config.toml`:
 
