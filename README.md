@@ -16,7 +16,7 @@ The two automatic actions are independent and protected by separate cooldowns.
 The real Codex CLI must already be installed. Then run:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/wktkow/codex-antibug-shit-wrapper/main/install.sh | bash
+/bin/bash -c 'set -e; if ! command -v curl >/dev/null; then if command -v apt-get >/dev/null; then if [ "$(id -u)" -eq 0 ]; then apt-get update && apt-get install -y curl ca-certificates; else sudo apt-get update && sudo apt-get install -y curl ca-certificates; fi; else echo "curl is required" >&2; exit 1; fi; fi; f=$(mktemp); trap '\''rm -f "$f"'\'' EXIT; curl -fsSL https://raw.githubusercontent.com/wktkow/codex-antibug-shit-wrapper/main/install.sh -o "$f"; /bin/bash "$f"'
 ```
 
 The installer supports Ubuntu-based Linux and macOS. It installs the wrapper in
@@ -24,7 +24,7 @@ The installer supports Ubuntu-based Linux and macOS. It installs the wrapper in
 detects Bash, Zsh, and Fish configs, and asks before overriding the interactive
 `codex` command with a shell-compatible alias. It also explains and offers to
 append the required `Ctrl-M` keymap to `~/.codex/config.toml`. It is safe to
-rerun.
+rerun and refuses to overwrite a non-wrapper executable in its install path.
 
 Codex must treat `Ctrl-M` as submit. Add this to `~/.codex/config.toml`:
 
