@@ -22,14 +22,20 @@ mkdir -p "$HOME/bin"
 install -m 755 codex codex-watch "$HOME/bin/"
 ```
 
-Put `~/bin` before the real Codex binary on your `PATH`:
+Recommended: alias `codex` to the wrapper in your shell config.
 
 ```sh
-echo 'export PATH="$HOME/bin:$PATH"' >> ~/.bashrc
+# Bash
+echo 'alias codex="$HOME/bin/codex"' >> ~/.bashrc
 source ~/.bashrc
+
+# Zsh
+echo 'alias codex="$HOME/bin/codex"' >> ~/.zshrc
+source ~/.zshrc
 ```
 
-Use `~/.zshrc` instead if you use Zsh.
+Use only the pair for your shell. Alternatively, put `~/bin` before the real
+Codex binary on your `PATH` with `export PATH="$HOME/bin:$PATH"`.
 
 Codex must treat `Ctrl-M` as submit. Add this to `~/.codex/config.toml`:
 
