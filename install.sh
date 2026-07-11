@@ -37,6 +37,8 @@ find_real_codex() {
 
   if [ -n "${CODEX_REAL_BIN:-}" ]; then
     [ -x "$CODEX_REAL_BIN" ] || die "CODEX_REAL_BIN is not executable: $CODEX_REAL_BIN"
+    is_managed_wrapper "$CODEX_REAL_BIN" &&
+      die "CODEX_REAL_BIN points to the wrapper, not the real Codex executable"
     printf '%s\n' "$CODEX_REAL_BIN"
     return 0
   fi
@@ -75,7 +77,7 @@ validate_destination() {
   esac
 
   if { [ -e "$target" ] || [ -L "$target" ]; } && ! is_managed_wrapper "$target"; then
-    die "refusing to overwrite the existing non-wrapper executable at $target"
+    die "refusing to overwrite $target; set CODEX_WRAPPER_INSTALL_DIR to a different directory"
   fi
 
   REAL_CODEX_PATH=$(find_real_codex || true)
