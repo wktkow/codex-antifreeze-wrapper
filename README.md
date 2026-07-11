@@ -13,7 +13,7 @@ The two automatic actions are independent and protected by separate cooldowns.
 
 ## Install
 
-Requirements: Codex and Python 3. tmux is optional but recommended.
+Requirements: Codex, Python 3, and tmux.
 
 ```sh
 git clone https://github.com/wktkow/codex-antibug-shit-wrapper.git
@@ -68,8 +68,9 @@ Attach to it or create a new one? [A/n/q]
 - `q`: quit.
 - `Ctrl-B`, then `d`: detach. Codex and both watchers keep running.
 
-Inside tmux, or when passing Codex arguments, the session prompt is skipped.
-If tmux is not installed, watched Codex runs directly in the current terminal.
+Inside tmux, Codex runs in the current session without nesting another tmux.
+Commands with arguments start in a dedicated project tmux session. There is
+intentionally no mode that runs Codex outside tmux.
 
 ## Configuration
 
@@ -96,11 +97,8 @@ export CODEX_WATCH_SAFETY_CHECK_COOLDOWN=4
 Useful switches:
 
 ```sh
-# Run watched Codex without tmux.
-CODEX_NO_TMUX=1 codex
-
-# Run the real Codex binary without tmux or the watcher.
-CODEX_NO_TMUX=1 CODEX_WATCH_DISABLE=1 codex
+# Disable the watcher while still running Codex inside tmux.
+CODEX_WATCH_DISABLE=1 codex
 
 # Disable only the automatic safety-check Return.
 CODEX_WATCH_NO_SAFETY_CHECK_RETURN=1 codex

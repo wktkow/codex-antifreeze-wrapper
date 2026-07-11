@@ -52,6 +52,11 @@ ensure_linux_dependencies() {
     packages+=(python3)
   fi
 
+  if [ -z "${TMUX:-}" ] && [ -z "${CODEX_TMUX_BIN:-}" ] && \
+     ! command -v tmux >/dev/null 2>&1; then
+    packages+=(tmux)
+  fi
+
   [ "${#packages[@]}" -gt 0 ] || return 0
 
   printf 'codex wrapper: missing Linux dependencies: %s\n' "${packages[*]}" >&2
@@ -110,6 +115,11 @@ ensure_linux_dependencies() {
 
   if watch_requires_python3 && ! command -v python3 >/dev/null 2>&1; then
     die "python3 is still unavailable after installation"
+  fi
+
+  if [ -z "${TMUX:-}" ] && [ -z "${CODEX_TMUX_BIN:-}" ] && \
+     ! command -v tmux >/dev/null 2>&1; then
+    die "tmux is still unavailable after installation"
   fi
 
 }
@@ -258,7 +268,7 @@ find_tmux_bin() {
 }
 
 
-run_codex_here() {
+run_watched_codex() {
   if [ "${CODEX_WATCH_DISABLE:-0}" = "1" ]; then
     exec "$REAL_CODEX" "$@"
   fi
@@ -318,9 +328,6 @@ emit_env_assignment() {
 build_tmux_command() {
   local env_name
 
-  printf 'CODEX_NO_TMUX='
-  sh_quote '1'
-  printf ' '
   printf 'CODEX_REAL_BIN='
   sh_quote "$REAL_CODEX"
   printf ' '
@@ -360,6 +367,12 @@ build_tmux_command() {
   done
 
   sh_quote "$SELF"
+
+  local arg
+  for arg in "$@"; do
+    printf ' '
+    sh_quote "$arg"
+  done
 }
 
 
@@ -388,8 +401,9 @@ start_new_tmux_session() {
   local session_name=$1
   local session_dir=$2
   local command
+  shift 2
 
-  command=$(build_tmux_command)
+  command=$(build_tmux_command "$@")
   exec "$TMUX_BIN" new-session -s "$session_name" -c "$session_dir" "$command"
 }
 
@@ -432,10 +446,8 @@ fi
 
 ensure_linux_dependencies
 
-if [ -n "${TMUX:-}" ] || [ -n "${CODEX_NO_TMUX:-}" ] || \
-   [ "${CODEX_SKIP_TMUX:-0}" = "1" ] || [ "${CODEX_TMUX:-1}" = "0" ] || \
-   [ "$#" -gt 0 ]; then
-  run_codex_here "$@"
+if [ -n "${TMUX:-}" ]; then
+  run_watched_codex "$@"
 fi
 
 TMUX_BIN=$(find_tmux_bin)
@@ -447,12 +459,19 @@ if [ "$tmux_find_status" -ne 0 ]; then
   TMUX_BIN=
 fi
 if [ -z "$TMUX_BIN" ]; then
-  run_codex_here
+  die "tmux is required. Install tmux or set CODEX_TMUX_BIN=/path/to/tmux."
 fi
 
 SESSION_DIR=${CODEX_TMUX_DIR:-$PWD}
 SESSION_NAME=${CODEX_TMUX_SESSION:-codex-$(basename "$SESSION_DIR")}
 SESSION_NAME=$(printf '%s' "$SESSION_NAME" | tr -c '[:alnum:]_.-' '-')
+
+if [ "$#" -gt 0 ]; then
+  if session_exists "$SESSION_NAME"; then
+    SESSION_NAME=$(next_session_name "$SESSION_NAME")
+  fi
+  start_new_tmux_session "$SESSION_NAME" "$SESSION_DIR" "$@"
+fi
 
 if session_exists "$SESSION_NAME"; then
   if [ -t 0 ] && [ -t 1 ]; then
