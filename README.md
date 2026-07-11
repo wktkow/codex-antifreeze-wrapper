@@ -22,7 +22,9 @@ curl -fsSL https://raw.githubusercontent.com/wktkow/codex-antibug-shit-wrapper/m
 The installer supports Ubuntu-based Linux and macOS. It installs the wrapper in
 `~/.local/bin`, installs missing Python/tmux dependencies with apt or Homebrew,
 detects Bash, Zsh, and Fish configs, and asks before overriding the interactive
-`codex` command with a shell-compatible alias. It is safe to rerun.
+`codex` command with a shell-compatible alias. It also explains and offers to
+append the required `Ctrl-M` keymap to `~/.codex/config.toml`. It is safe to
+rerun.
 
 Codex must treat `Ctrl-M` as submit. Add this to `~/.codex/config.toml`:
 

@@ -7,6 +7,8 @@ RAW_BASE="https://raw.githubusercontent.com/${REPO}/${REF}"
 INSTALL_DIR=${CODEX_WRAPPER_INSTALL_DIR:-"$HOME/.local/bin"}
 MARKER_START="# >>> codex-antifreeze-shit-wrapper >>>"
 MARKER_END="# <<< codex-antifreeze-shit-wrapper <<<"
+KEYMAP_MARKER_START="# >>> codex-antifreeze keymap >>>"
+KEYMAP_MARKER_END="# <<< codex-antifreeze keymap <<<"
 
 say() {
   printf 'codex wrapper installer: %s\n' "$*"
@@ -237,6 +239,45 @@ configure_alias() {
   say "configured $shell_name alias in $config_file"
 }
 
+print_keymap_snippet() {
+  printf '%s\n' \
+    '[tui.keymap.composer]' \
+    'submit = ["enter", "ctrl-m"]' \
+    '' \
+    '[tui.keymap.editor]' \
+    'insert_newline = ["ctrl-j", "shift-enter", "alt-enter"]'
+}
+
+configure_codex_keymap() {
+  local codex_dir=${CODEX_HOME:-"$HOME/.codex"}
+  local config_file="$codex_dir/config.toml"
+
+  mkdir -p "$codex_dir"
+  touch "$config_file"
+
+  if grep -Fqx "$KEYMAP_MARKER_START" "$config_file"; then
+    say "Codex Ctrl-M keymap is already configured in $config_file"
+    return 0
+  fi
+
+  if grep -Eq '^([[:space:]]*\[tui\.keymap\.(composer|editor)\]|[[:space:]]*tui\.keymap\.(composer|editor)\.)' "$config_file"; then
+    say "existing Codex composer/editor keymap found in $config_file"
+    say "not changing it automatically because duplicate TOML tables would break Codex"
+    printf '\nAdd or merge these values manually:\n' >&2
+    print_keymap_snippet >&2
+    printf '\n' >&2
+    return 1
+  fi
+
+  {
+    printf '\n%s\n' "$KEYMAP_MARKER_START"
+    print_keymap_snippet
+    printf '%s\n' "$KEYMAP_MARKER_END"
+  } >>"$config_file"
+
+  say "appended the Ctrl-M keymap to $config_file"
+}
+
 main() {
   local shell_name
   local shell_list=""
@@ -248,6 +289,15 @@ main() {
   bash -n "$INSTALL_DIR/codex"
   python3 "$INSTALL_DIR/codex-watch" --help >/dev/null
   say "installed codex and codex-watch in $INSTALL_DIR"
+
+  say "Ctrl-M submit lets the watcher submit /goal resume and activate Keep waiting."
+  say "Without it, Codex may only insert a newline or leave the automatic reply unsubmitted."
+  if prompt_yes_no "Append the required Ctrl-M keymap to the Codex config?"; then
+    configure_codex_keymap ||
+      say "automatic keymap setup skipped; merge the displayed values before using the watcher"
+  else
+    say "keymap not changed; automatic replies may not be submitted"
+  fi
 
   detect_shells
   for shell_name in "${DETECTED_SHELLS[@]}"; do
