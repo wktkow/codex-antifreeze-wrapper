@@ -13,14 +13,6 @@ is_linux() {
 }
 
 
-tmux_will_be_used() {
-  [ "${CODEX_SKIP_TMUX:-0}" != "1" ] || return 1
-  [ "${CODEX_TMUX:-1}" != "0" ] || return 1
-  [ -z "${TMUX:-}" ] || [ "${CODEX_TMUX_INSIDE:-0}" = "1" ] || return 1
-  [ -t 0 ] && [ -t 1 ]
-}
-
-
 watch_requires_python3() {
   local shebang
 
@@ -58,10 +50,6 @@ ensure_linux_dependencies() {
 
   if watch_requires_python3 && ! command -v python3 >/dev/null 2>&1; then
     packages+=(python3)
-  fi
-
-  if tmux_will_be_used && [ -z "${TMUX_BIN:-}" ]; then
-    packages+=(tmux)
   fi
 
   [ "${#packages[@]}" -gt 0 ] || return 0
@@ -124,9 +112,6 @@ ensure_linux_dependencies() {
     die "python3 is still unavailable after installation"
   fi
 
-  if tmux_will_be_used && ! command -v tmux >/dev/null 2>&1; then
-    die "tmux is still unavailable after installation"
-  fi
 }
 
 
@@ -282,17 +267,6 @@ run_codex_here() {
 }
 
 
-should_use_tmux() {
-  tmux_will_be_used || return 1
-
-  if [ -z "${TMUX_BIN:-}" ]; then
-    die "tmux is required but was not found. Install tmux, set CODEX_TMUX_BIN, or run CODEX_TMUX=0 codex."
-  fi
-
-  return 0
-}
-
-
 sh_quote() {
   local value=$1
 
@@ -344,7 +318,7 @@ emit_env_assignment() {
 build_tmux_command() {
   local env_name
 
-  printf 'CODEX_SKIP_TMUX='
+  printf 'CODEX_NO_TMUX='
   sh_quote '1'
   printf ' '
   printf 'CODEX_REAL_BIN='
@@ -386,100 +360,62 @@ build_tmux_command() {
   done
 
   sh_quote "$SELF"
-
-  local arg
-  for arg in "$@"; do
-    printf ' '
-    sh_quote "$arg"
-  done
 }
 
 
-new_session_name() {
-  local prefix=${CODEX_TMUX_SESSION_PREFIX:-codex}
-  local base
+session_exists() {
+  "$TMUX_BIN" has-session -t "=$1" 2>/dev/null
+}
+
+
+next_session_name() {
+  local base=$1
   local candidate
-  local n=1
+  local index=2
 
-  prefix=${prefix//:/-}
-  base="${prefix}-$(date +%Y%m%d-%H%M%S)"
-  candidate=$base
-
-  while "$TMUX_BIN" has-session -t "$candidate" 2>/dev/null; do
-    candidate="${base}-${n}"
-    n=$((n + 1))
+  while true; do
+    candidate="${base}-${index}"
+    if ! session_exists "$candidate"; then
+      printf '%s\n' "$candidate"
+      return
+    fi
+    index=$((index + 1))
   done
-
-  printf '%s\n' "$candidate"
 }
 
 
 start_new_tmux_session() {
-  local session_name
+  local session_name=$1
+  local session_dir=$2
   local command
 
-  session_name=${CODEX_TMUX_SESSION_NAME:-}
-  [ -n "$session_name" ] || session_name=$(new_session_name)
-
-  command=$(build_tmux_command "$@")
-  exec "$TMUX_BIN" new-session -c "$PWD" -s "$session_name" "$command"
+  command=$(build_tmux_command)
+  exec "$TMUX_BIN" new-session -s "$session_name" -c "$session_dir" "$command"
 }
 
 
-choose_tmux_session() {
-  local sessions=()
-  local line
-  local i
-  local name
-  local windows
-  local attached
+choose_existing_session() {
+  local session_name=$1
   local choice
 
-  while IFS= read -r line; do
-    [ -n "$line" ] && sessions+=("$line")
-  done < <("$TMUX_BIN" list-sessions -F '#{session_name}	#{session_windows}	#{session_attached}' 2>/dev/null || true)
-
-  if [ "${#sessions[@]}" -eq 0 ]; then
-    return 1
-  fi
-
-  printf 'Existing tmux sessions:\n'
-  for i in "${!sessions[@]}"; do
-    IFS=$'\t' read -r name windows attached <<<"${sessions[$i]}"
-    if [ "${attached:-0}" -gt 0 ]; then
-      printf '  %d) %s (%s windows, attached)\n' "$((i + 1))" "$name" "$windows"
-    else
-      printf '  %d) %s (%s windows, detached)\n' "$((i + 1))" "$name" "$windows"
-    fi
-  done
-  printf '  n) start new Codex tmux session\n'
-  printf '  r) run Codex here without tmux\n'
-  printf '  q) quit\n'
+  printf "Codex tmux session '%s' is already running.\n" "$session_name"
 
   while true; do
-    printf 'Select tmux session [n]: '
-    IFS= read -r choice || return 1
-    choice=${choice:-n}
+    printf 'Attach to it or create a new one? [A/n/q] '
+    IFS= read -r choice || choice=a
 
-    case "$choice" in
-      n|N)
-        return 1
+    case "${choice:-a}" in
+      a|A|[aA][tT][tT][aA][cC][hH])
+        exec "$TMUX_BIN" attach-session -t "=$session_name"
         ;;
-      r|R)
-        return 3
+      n|N|[nN][eE][wW])
+        return 0
         ;;
-      q|Q)
-        return 2
-        ;;
-      ''|*[!0-9]*)
-        printf 'Enter a number, n, r, or q.\n' >&2
+      q|Q|[qQ][uU][iI][tT])
+        exit 0
         ;;
       *)
-        if [ "$choice" -ge 1 ] && [ "$choice" -le "${#sessions[@]}" ]; then
-          IFS=$'\t' read -r SELECTED_TMUX_SESSION _ <<<"${sessions[$((choice - 1))]}"
-          return 0
-        fi
-        printf 'No tmux session numbered %s.\n' "$choice" >&2
+        printf "Please choose 'a' to attach, 'n' for new, or 'q' to quit.\n" >&2
         ;;
     esac
   done
@@ -494,6 +430,14 @@ if [ "${CODEX_WATCH_DISABLE:-0}" != "1" ]; then
   WATCH_BIN=$(find_watch_bin) || exit $?
 fi
 
+ensure_linux_dependencies
+
+if [ -n "${TMUX:-}" ] || [ -n "${CODEX_NO_TMUX:-}" ] || \
+   [ "${CODEX_SKIP_TMUX:-0}" = "1" ] || [ "${CODEX_TMUX:-1}" = "0" ] || \
+   [ "$#" -gt 0 ]; then
+  run_codex_here "$@"
+fi
+
 TMUX_BIN=$(find_tmux_bin)
 tmux_find_status=$?
 if [ "$tmux_find_status" -ne 0 ]; then
@@ -502,33 +446,21 @@ if [ "$tmux_find_status" -ne 0 ]; then
   fi
   TMUX_BIN=
 fi
-
-ensure_linux_dependencies
-
-if [ -z "$TMUX_BIN" ] && tmux_will_be_used; then
-  TMUX_BIN=$(find_tmux_bin) || exit $?
+if [ -z "$TMUX_BIN" ]; then
+  run_codex_here
 fi
 
-SELECTED_TMUX_SESSION=
+SESSION_DIR=${CODEX_TMUX_DIR:-$PWD}
+SESSION_NAME=${CODEX_TMUX_SESSION:-codex-$(basename "$SESSION_DIR")}
+SESSION_NAME=$(printf '%s' "$SESSION_NAME" | tr -c '[:alnum:]_.-' '-')
 
-if should_use_tmux; then
-  choose_tmux_session
-  tmux_choice=$?
-
-  case "$tmux_choice" in
-    0)
-      exec "$TMUX_BIN" attach-session -t "$SELECTED_TMUX_SESSION"
-      ;;
-    1)
-      start_new_tmux_session "$@"
-      ;;
-    2)
-      exit 0
-      ;;
-    3)
-      run_codex_here "$@"
-      ;;
-  esac
+if session_exists "$SESSION_NAME"; then
+  if [ -t 0 ] && [ -t 1 ]; then
+    choose_existing_session "$SESSION_NAME"
+    SESSION_NAME=$(next_session_name "$SESSION_NAME")
+  else
+    exec "$TMUX_BIN" attach-session -t "=$SESSION_NAME"
+  fi
 fi
 
-run_codex_here "$@"
+start_new_tmux_session "$SESSION_NAME" "$SESSION_DIR"

@@ -41,18 +41,11 @@ echo 'export PATH="$HOME/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
 ```
 
-On Linux, the shim checks for the dependencies needed by the current invocation.
-If `python3` or `tmux` is missing on an apt-based system, an interactive run
-offers to install the missing packages with `sudo apt-get`. `sudo` handles the
-password prompt directly. Package configuration uses Debian's non-interactive
-frontend so the install cannot stall on an additional configuration question.
+On Linux, the shim checks for Python when the watcher needs it. On apt-based
+systems, an interactive run can install missing Python with `sudo apt-get`.
 The default answer is no, and non-interactive runs never install packages
-automatically; they print the command to run instead.
-
-The tmux check is skipped when tmux will not be used, such as with
-`CODEX_TMUX=0 codex`. The Python check is skipped when the watcher is disabled
-with `CODEX_WATCH_DISABLE=1`. To disable the Linux dependency check entirely,
-set `CODEX_LINUX_DEP_CHECK=0`.
+automatically. If tmux is unavailable, the shim simply runs watched Codex in the
+current terminal. Set `CODEX_LINUX_DEP_CHECK=0` to disable the Python check.
 
 Now this launches the shim:
 
@@ -60,27 +53,20 @@ Now this launches the shim:
 codex
 ```
 
-If tmux is installed and you are not already inside tmux, the shim lists running
-tmux sessions first:
+If tmux is installed, a no-argument `codex` launch uses a stable session name for
+the current directory, such as `codex-my-project`. If that session already
+exists, the prompt is:
 
 ```text
-Existing tmux sessions:
-  1) codex-20260630-224500 (1 windows, detached)
-  n) start new Codex tmux session
-  r) run Codex here without tmux
-  q) quit
-Select tmux session [n]:
+Codex tmux session 'codex-my-project' is already running.
+Attach to it or create a new one? [A/n/q]
 ```
 
-If there are no running tmux sessions, it starts a new tmux session and runs the
-watched Codex command there. If you are already inside tmux, it runs the watched
-Codex command in the current terminal.
+Press Enter or `a` to attach, `n` to create `codex-my-project-2` (or the next
+available suffix), or `q` to quit. If the project session does not exist, it is
+created immediately. Inside tmux, Codex runs in the current session.
 
-For interactive terminals, tmux is expected by default. If tmux cannot be found,
-the shim exits with an error instead of silently running Codex outside tmux. Use
-`CODEX_TMUX=0 codex` when you intentionally want to run without tmux.
-
-Arguments still pass through:
+Commands with arguments skip tmux selection and pass through to watched Codex:
 
 ```sh
 codex --some-codex-flag
@@ -187,13 +173,15 @@ active independently. Set `CODEX_WATCH_NO_SAFETY_CHECK_RETURN=1` (or pass
 Run watched Codex in the current terminal without tmux:
 
 ```sh
-CODEX_TMUX=0 codex
+CODEX_NO_TMUX=1 codex
 ```
+
+`CODEX_TMUX=0` remains supported as a compatibility alias.
 
 Run the real Codex binary directly without the watcher:
 
 ```sh
-CODEX_WATCH_DISABLE=1 CODEX_TMUX=0 codex
+CODEX_WATCH_DISABLE=1 CODEX_NO_TMUX=1 codex
 ```
 
 If the shim cannot find the real binary, set it explicitly:
@@ -202,10 +190,11 @@ If the shim cannot find the real binary, set it explicitly:
 CODEX_REAL_BIN=/opt/homebrew/bin/codex codex
 ```
 
-Use a custom tmux session prefix:
+Use a custom tmux working directory or exact session name:
 
 ```sh
-CODEX_TMUX_SESSION_PREFIX=codex-work codex
+CODEX_TMUX_DIR=/path/to/project codex
+CODEX_TMUX_SESSION=codex-work codex
 ```
 
 Use a specific tmux binary if it is installed outside `PATH`:
@@ -284,10 +273,10 @@ CODEX_WATCH_SAFETY_CHECK_COOLDOWN
                               Minimum seconds between safety-check Return keypresses.
 CODEX_WATCH_NO_TMUX_DETACH_HOTKEY
                               Disable the Ctrl-b then d fallback detach hotkey.
-CODEX_TMUX=0                Do not use tmux.
+CODEX_NO_TMUX=1             Do not use tmux.
+CODEX_TMUX=0                Compatibility alias for CODEX_NO_TMUX=1.
 CODEX_TMUX_BIN              tmux binary path.
-CODEX_TMUX_INSIDE=1         Allow tmux selection even from inside tmux.
-CODEX_TMUX_SESSION_NAME     Exact session name for a new tmux session.
-CODEX_TMUX_SESSION_PREFIX   Prefix for generated tmux session names.
+CODEX_TMUX_DIR              Working directory used for the tmux session.
+CODEX_TMUX_SESSION          Exact project tmux session name.
 CODEX_LINUX_DEP_CHECK=0     Disable the Linux dependency check and install prompt.
 ```
