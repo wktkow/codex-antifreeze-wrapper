@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# codex-antifreeze-wrapper managed watcher
 # Edit these values.
 #
 # TYPE_IN is sent to the child process followed by SUBMIT_KEY.
@@ -12,7 +13,8 @@ TYPE_KEY_DELAY_SECONDS = 0.015
 SUBMIT_DELAY_SECONDS = 0.15
 
 # This prompt is independent of the normal match/reply mode. When every part is
-# present in recent terminal output, send a bare Return to choose "Keep waiting".
+# present in recent terminal output, use arrow keys to select "Keep waiting"
+# before sending Return.
 SAFETY_CHECK_PROMPT_PARTS = (
     "Additional safety checks",
     "This request requires additional safety checks, which can take extra time.",
@@ -20,6 +22,8 @@ SAFETY_CHECK_PROMPT_PARTS = (
 )
 AUTO_RETURN_SAFETY_CHECKS = True
 SAFETY_CHECK_COOLDOWN_SECONDS = 4
+SAFETY_CHECK_MENU_MAX_OPTIONS = 3
+SAFETY_CHECK_KEY_DELAY_SECONDS = 0.05
 
 MIN_SECONDS_BETWEEN_UNFREEZES = 4
 MAX_UNFREEZES_PER_WINDOW = 0
@@ -51,10 +55,53 @@ ANSI_RE = re.compile(
     r"\x1b\][^\x07]*(?:\x07|\x1b\\)|"  # OSC
     r"\x1b[@-Z\\-_]"                   # 2-byte escapes
 )
+KEEP_WAITING_OPTION_RE = re.compile(r"(?<!\d)(\d+)\.\s*Keep waiting\b")
+ACTIVE_OPTION_RE = re.compile(r"›\s*(\d+)\.\s*[^\r\n]+")
+ARROW_UP_SEQUENCE = b"\x1b[A"
+ARROW_DOWN_SEQUENCE = b"\x1b[B"
+RETURN_SEQUENCE = b"\r"
 
 
 def strip_ansi(text: str) -> str:
     return ANSI_RE.sub("", text)
+
+
+def safety_check_option_indices(buffer: str):
+    prompt_start = buffer.rfind("Additional safety checks")
+    if prompt_start < 0:
+        return None
+
+    prompt = buffer[prompt_start:]
+    keep_waiting_matches = KEEP_WAITING_OPTION_RE.findall(prompt)
+    active_matches = ACTIVE_OPTION_RE.findall(prompt)
+    if not keep_waiting_matches or not active_matches:
+        return None
+
+    active_index = int(active_matches[-1])
+    keep_waiting_index = int(keep_waiting_matches[-1])
+    if not (
+        1 <= active_index <= SAFETY_CHECK_MENU_MAX_OPTIONS
+        and 1 <= keep_waiting_index <= SAFETY_CHECK_MENU_MAX_OPTIONS
+    ):
+        return None
+    return active_index, keep_waiting_index
+
+
+def keep_waiting_key_sequence(active_index: int, keep_waiting_index: int):
+    if not (
+        1 <= active_index <= SAFETY_CHECK_MENU_MAX_OPTIONS
+        and 1 <= keep_waiting_index <= SAFETY_CHECK_MENU_MAX_OPTIONS
+    ):
+        raise ValueError(
+            "invalid safety-check option indices: "
+            f"active={active_index}, keep_waiting={keep_waiting_index}"
+        )
+
+    if active_index < keep_waiting_index:
+        navigation = [ARROW_DOWN_SEQUENCE] * (keep_waiting_index - active_index)
+    else:
+        navigation = [ARROW_UP_SEQUENCE] * (active_index - keep_waiting_index)
+    return navigation + [RETURN_SEQUENCE]
 
 
 def env_or_default(name: str, default: str) -> str:
@@ -194,8 +241,8 @@ def parse_args():
             "CODEX_WATCH_NO_SAFETY_CHECK_RETURN", not AUTO_RETURN_SAFETY_CHECKS
         ),
         help=(
-            "Do not press Return when the complete additional-safety-checks "
-            "prompt is detected."
+            "Do not select Keep waiting when the complete "
+            "additional-safety-checks prompt is detected."
         ),
     )
     parser.add_argument(
@@ -204,7 +251,10 @@ def parse_args():
         default=env_float(
             "CODEX_WATCH_SAFETY_CHECK_COOLDOWN", SAFETY_CHECK_COOLDOWN_SECONDS
         ),
-        help="Minimum seconds between automatic safety-check Return keypresses.",
+        help=(
+            "Minimum seconds between automatic Keep waiting selections. "
+            "Prompts detected during the cooldown are left for manual input."
+        ),
     )
     parser.add_argument(
         "--buffer",
@@ -282,6 +332,7 @@ def main() -> int:
     pattern = re.compile(args.pattern, re.IGNORECASE | re.DOTALL) if args.pattern else None
     match_text = args.match
     recent = ""
+    safety_raw_recent = ""
     safety_recent = ""
     match_latched = False
     latched_notice_sent = False
@@ -293,7 +344,7 @@ def main() -> int:
     pending_match_due = 0.0
     safety_check_latched = False
     last_safety_return = None
-    pending_safety_return_due = 0.0
+    output_decoder = codecs.getincrementaldecoder("utf-8")(errors="ignore")
     tmux_bin = os.getenv("CODEX_WATCH_TMUX_BIN", "tmux")
     tmux_detach_hotkey_enabled = (
         ENABLE_CTRL_B_D_TMUX_DETACH
@@ -463,34 +514,45 @@ def main() -> int:
         return False
 
     def send_safety_return():
-        nonlocal last_safety_return, pending_safety_return_due
+        nonlocal last_safety_return
+
+        selection = safety_check_option_indices(safety_recent)
+        if selection is None:
+            notice(
+                "did not auto-submit safety check: active and Keep waiting "
+                "options could not be identified"
+            )
+            return "unavailable"
 
         now = time.monotonic()
         if (
             last_safety_return is not None
             and now - last_safety_return < args.safety_check_cooldown
         ):
-            pending_safety_return_due = (
-                last_safety_return + args.safety_check_cooldown
-            )
-            remaining = pending_safety_return_due - now
+            remaining = args.safety_check_cooldown - (now - last_safety_return)
             notice(
-                "suppressed safety-check Return: "
-                f"cooldown active for {remaining:.1f}s; retry scheduled"
+                "suppressed Keep waiting selection: "
+                f"cooldown active for {remaining:.1f}s"
             )
-            return False
+            return "suppressed"
 
         try:
-            os.write(master_fd, b"\r")
+            keys = keep_waiting_key_sequence(*selection)
+            for key_index, key in enumerate(keys):
+                os.write(master_fd, key)
+                if key_index < len(keys) - 1:
+                    time.sleep(SAFETY_CHECK_KEY_DELAY_SECONDS)
         except OSError as e:
             if e.errno in (errno.EIO, errno.EBADF):
-                return False
+                return "closed"
             raise
 
         last_safety_return = now
-        pending_safety_return_due = 0.0
-        notice("auto-sent Return: additional safety checks / Keep waiting")
-        return True
+        notice(
+            "auto-selected Keep waiting with arrow keys and sent Return: "
+            "additional safety checks"
+        )
+        return "sent"
 
     try:
         while True:
@@ -515,24 +577,27 @@ def main() -> int:
                 os.write(stdout_fd, data)
                 last_output = time.monotonic()
 
-                text = data.decode(errors="ignore")
-
-                if not args.no_strip_ansi:
-                    text = strip_ansi(text)
+                raw_text = output_decoder.decode(data)
+                safety_text = strip_ansi(raw_text)
+                text = raw_text if args.no_strip_ansi else safety_text
 
                 recent = (recent + text)[-args.buffer:]
-                safety_recent = (safety_recent + text)[-args.buffer:]
+                safety_raw_recent = (safety_raw_recent + raw_text)[
+                    -(args.buffer * 2) :
+                ]
+                safety_recent = strip_ansi(safety_raw_recent)[-args.buffer:]
 
                 if not args.no_safety_check_return:
                     safety_prompt_present = safety_check_prompt_present(safety_recent)
                     if safety_prompt_present:
                         if not safety_check_latched:
-                            send_safety_return()
-                        safety_check_latched = True
-                        safety_recent = ""
+                            result = send_safety_return()
+                            if result in {"sent", "suppressed"}:
+                                safety_check_latched = True
+                                safety_raw_recent = ""
+                                safety_recent = ""
                     elif safety_check_latched and text.strip():
                         safety_check_latched = False
-                        pending_safety_return_due = 0.0
 
                 reason = current_match_reason(recent)
 
@@ -566,14 +631,6 @@ def main() -> int:
                 send_or_schedule_match(reason)
                 match_latched = True
                 latched_notice_sent = False
-
-            if (
-                pending_safety_return_due
-                and time.monotonic() >= pending_safety_return_due
-            ):
-                pending_safety_return_due = 0.0
-                send_safety_return()
-                safety_check_latched = True
 
             if args.idle > 0 and time.monotonic() - last_output >= args.idle:
                 send_reply(f"idle {int(args.idle)}s")

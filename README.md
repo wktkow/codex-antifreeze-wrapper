@@ -5,11 +5,13 @@ A small wrapper that keeps Codex moving in long-running tmux sessions.
 It runs Codex through a PTY watcher and automatically:
 
 - Sends `/goal resume` when `Goal blocked` appears.
-- Presses Return when the complete **Additional safety checks / Keep waiting**
-  prompt appears.
+- Uses arrow keys to select **Keep waiting**, then presses Return when the
+  complete **Additional safety checks** prompt appears.
 - Keeps working after you detach from tmux.
 
 The two automatic actions are independent and protected by separate cooldowns.
+Safety prompts detected during their cooldown are left untouched; the watcher
+does not queue arrow keys or Return for later, when the prompt may be gone.
 
 ## Install
 
@@ -24,7 +26,9 @@ The installer supports Ubuntu-based Linux and macOS. It installs the wrapper in
 detects Bash, Zsh, and Fish configs, and asks before overriding the interactive
 `codex` command with a shell-compatible alias. It also explains and offers to
 append the required `Ctrl-M` keymap to `~/.codex/config.toml`. It is safe to
-rerun and refuses to overwrite a non-wrapper executable in its install path.
+rerun: each run downloads and replaces both managed executables, updating any
+preexisting wrapper install in the selected install directory. It refuses to
+overwrite unrelated executables or non-file destinations in its install path.
 
 Codex must treat `Ctrl-M` as submit. Add this to `~/.codex/config.toml`:
 

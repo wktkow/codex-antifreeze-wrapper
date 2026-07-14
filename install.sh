@@ -11,6 +11,7 @@ LEGACY_MARKER_END="# <<< codex-antifreeze-shit-wrapper <<<"
 KEYMAP_MARKER_START="# >>> codex-antifreeze keymap >>>"
 KEYMAP_MARKER_END="# <<< codex-antifreeze keymap <<<"
 REAL_CODEX_PATH=""
+INSTALL_ACTION="installed"
 
 say() {
   printf 'codex wrapper installer: %s\n' "$*"
@@ -31,6 +32,19 @@ is_managed_wrapper() {
     return 0
   grep -Fq 'find_real_codex()' "$candidate" 2>/dev/null &&
     grep -Fq 'codex wrapper:' "$candidate" 2>/dev/null
+}
+
+is_managed_watcher() {
+  local candidate=$1
+
+  [ -f "$candidate" ] || return 1
+  grep -Fq 'codex-antifreeze-wrapper managed watcher' "$candidate" 2>/dev/null &&
+    return 0
+  # Recognize every watcher version published before the marker was added.
+  grep -Fq 'TYPE_IN =' "$candidate" 2>/dev/null &&
+    grep -Fq 'WHEN_OUTPUT_CONTAINS =' "$candidate" 2>/dev/null &&
+    grep -Fq 'pty.fork()' "$candidate" 2>/dev/null &&
+    grep -Fq 'codex-watch:' "$candidate" 2>/dev/null
 }
 
 find_real_codex() {
@@ -75,18 +89,63 @@ find_real_codex() {
 
 validate_destination() {
   local target="$INSTALL_DIR/codex"
+  local target_is_managed=0
+  local watcher="$INSTALL_DIR/codex-watch"
 
   case "$INSTALL_DIR" in
     *"'"*|*$'\n'*) die "install directory cannot contain a single quote or newline: $INSTALL_DIR" ;;
   esac
 
-  if { [ -e "$target" ] || [ -L "$target" ]; } && ! is_managed_wrapper "$target"; then
-    die "refusing to overwrite $target; set CODEX_WRAPPER_INSTALL_DIR to a different directory"
+  if [ -e "$target" ] || [ -L "$target" ]; then
+    is_managed_wrapper "$target" ||
+      die "refusing to overwrite $target; set CODEX_WRAPPER_INSTALL_DIR to a different directory"
+    target_is_managed=1
+  fi
+
+  if [ -e "$watcher" ] || [ -L "$watcher" ]; then
+    if { [ ! -f "$watcher" ] && [ ! -L "$watcher" ]; } || [ -d "$watcher" ]; then
+      die "refusing to overwrite non-file destination $watcher"
+    fi
+    if [ "$target_is_managed" -eq 0 ] && ! is_managed_watcher "$watcher"; then
+      die "refusing to overwrite unrelated executable $watcher"
+    fi
+  fi
+
+  if [ -e "$target" ] || [ -L "$target" ] ||
+     [ -e "$watcher" ] || [ -L "$watcher" ]; then
+    INSTALL_ACTION="updated"
   fi
 
   REAL_CODEX_PATH=$(find_real_codex || true)
   [ -n "$REAL_CODEX_PATH" ] ||
     die "real Codex was not found on PATH; install Codex first or set CODEX_REAL_BIN"
+}
+
+replace_wrappers() {
+  local stage_dir=$1
+  local target="$INSTALL_DIR/codex"
+  local watcher="$INSTALL_DIR/codex-watch"
+  local target_existed=0
+
+  if [ -e "$target" ] || [ -L "$target" ]; then
+    target_existed=1
+    cp -pP "$target" "$stage_dir/codex.previous"
+  fi
+
+  mv -f "$stage_dir/codex" "$target"
+  if ! mv -f "$stage_dir/codex-watch" "$watcher"; then
+    if [ "$target_existed" -eq 1 ]; then
+      if ! mv -f "$stage_dir/codex.previous" "$target"; then
+        trap - EXIT
+        die "watcher update failed and the previous wrapper could not be restored; backup: $stage_dir/codex.previous"
+      fi
+    else
+      rm -f "$target"
+    fi
+    die "watcher update failed; restored the previous wrapper"
+  fi
+
+  rm -f "$stage_dir/codex.previous"
 }
 
 prompt_yes_no() {
@@ -206,12 +265,13 @@ download_wrapper() {
   local archive
   local python_bin
   local source_dir
+  local stage_dir=""
   local temp_dir
 
   command -v curl >/dev/null 2>&1 || die "curl is required"
   python_bin=$(command -v python3)
   temp_dir=$(mktemp -d)
-  trap 'rm -rf "$temp_dir"' EXIT
+  trap 'rm -rf "$temp_dir"; [ -z "${stage_dir:-}" ] || rm -rf "$stage_dir"' EXIT
   archive="$temp_dir/source.tar.gz"
   source_dir="$temp_dir/source"
 
@@ -226,11 +286,18 @@ download_wrapper() {
     tail -n +2 "$source_dir/codex-watch"
   } >"$temp_dir/codex-watch"
 
-  mkdir -p "$INSTALL_DIR"
-  install -m 755 "$source_dir/codex" "$INSTALL_DIR/codex"
-  install -m 755 "$temp_dir/codex-watch" "$INSTALL_DIR/codex-watch"
+  bash -n "$source_dir/codex"
+  "$python_bin" "$temp_dir/codex-watch" --help >/dev/null
 
-  rm -rf "$temp_dir"
+  mkdir -p "$INSTALL_DIR"
+  stage_dir=$(mktemp -d "$INSTALL_DIR/.codex-wrapper-install.XXXXXX")
+  # Always replace both managed executables. This makes a rerun an update and
+  # avoids leaving an older watcher paired with a newer wrapper (or vice versa).
+  install -m 755 "$source_dir/codex" "$stage_dir/codex"
+  install -m 755 "$temp_dir/codex-watch" "$stage_dir/codex-watch"
+  replace_wrappers "$stage_dir"
+
+  rm -rf "$temp_dir" "$stage_dir"
   trap - EXIT
 }
 
@@ -570,9 +637,9 @@ main() {
 
   bash -n "$INSTALL_DIR/codex"
   python3 "$INSTALL_DIR/codex-watch" --help >/dev/null
-  say "installed codex and codex-watch in $INSTALL_DIR"
+  say "$INSTALL_ACTION codex and codex-watch in $INSTALL_DIR"
 
-  say "Ctrl-M submit lets the watcher submit /goal resume and activate Keep waiting."
+  say "Ctrl-M submit lets the watcher submit /goal resume; arrow keys and Return activate Keep waiting."
   say "Without it, Codex may only insert a newline or leave the automatic reply unsubmitted."
   if prompt_yes_no "Append the required Ctrl-M keymap to the Codex config?"; then
     configure_codex_keymap ||
