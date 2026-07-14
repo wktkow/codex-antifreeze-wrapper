@@ -29,6 +29,11 @@ append the required `Ctrl-M` keymap to `~/.codex/config.toml`. It is safe to
 rerun: each run downloads and replaces both managed executables, updating any
 preexisting wrapper install in the selected install directory. It refuses to
 overwrite unrelated executables or non-file destinations in its install path.
+Reruns do not repeat optional keymap or alias questions: existing
+installer-managed pieces are refreshed automatically, while absent optional
+pieces are left unchanged. Equivalent manual keymap and alias settings are
+detected and left untouched. Missing required dependencies may still require
+confirmation.
 
 Codex must treat `Ctrl-M` as submit. Add this to `~/.codex/config.toml`:
 

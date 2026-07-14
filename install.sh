@@ -89,7 +89,6 @@ find_real_codex() {
 
 validate_destination() {
   local target="$INSTALL_DIR/codex"
-  local target_is_managed=0
   local watcher="$INSTALL_DIR/codex-watch"
 
   case "$INSTALL_DIR" in
@@ -99,20 +98,22 @@ validate_destination() {
   if [ -e "$target" ] || [ -L "$target" ]; then
     is_managed_wrapper "$target" ||
       die "refusing to overwrite $target; set CODEX_WRAPPER_INSTALL_DIR to a different directory"
-    target_is_managed=1
   fi
 
   if [ -e "$watcher" ] || [ -L "$watcher" ]; then
     if { [ ! -f "$watcher" ] && [ ! -L "$watcher" ]; } || [ -d "$watcher" ]; then
       die "refusing to overwrite non-file destination $watcher"
     fi
-    if [ "$target_is_managed" -eq 0 ] && ! is_managed_watcher "$watcher"; then
+    if ! is_managed_watcher "$watcher"; then
       die "refusing to overwrite unrelated executable $watcher"
     fi
   fi
 
   if [ -e "$target" ] || [ -L "$target" ] ||
      [ -e "$watcher" ] || [ -L "$watcher" ]; then
+    INSTALL_ACTION="updated"
+  fi
+  if [ "$INSTALL_ACTION" = "installed" ] && managed_configuration_present; then
     INSTALL_ACTION="updated"
   fi
 
@@ -370,6 +371,68 @@ managed_block_present() {
   return 0
 }
 
+alias_managed_block_present() {
+  local config_file=$1
+  local has_block=0
+
+  [ -f "$config_file" ] || return 1
+  if managed_block_present "$config_file" "$MARKER_START" "$MARKER_END"; then
+    has_block=1
+  fi
+  if managed_block_present "$config_file" "$LEGACY_MARKER_START" "$LEGACY_MARKER_END"; then
+    has_block=1
+  fi
+  [ "$has_block" -eq 1 ] || return 1
+
+  awk -v new_start="$MARKER_START" -v new_end="$MARKER_END" \
+      -v legacy_start="$LEGACY_MARKER_START" -v legacy_end="$LEGACY_MARKER_END" '
+    $0 == new_start || $0 == legacy_start {
+      starts++
+      if (active) bad = 1
+      active = 1
+      next
+    }
+    $0 == new_end || $0 == legacy_end {
+      ends++
+      if (!active) bad = 1
+      active = 0
+      next
+    }
+    END {
+      if (bad || active || starts != ends) exit 1
+    }
+  ' "$config_file" ||
+    die "overlapping managed alias blocks in $config_file; refusing to modify it"
+}
+
+preflight_managed_configs() {
+  local config_file="${CODEX_HOME:-$HOME/.codex}/config.toml"
+
+  managed_block_present "$config_file" "$KEYMAP_MARKER_START" "$KEYMAP_MARKER_END" || true
+  alias_managed_block_present "$HOME/.bashrc" || true
+  alias_managed_block_present "$HOME/.bash_profile" || true
+  alias_managed_block_present "$HOME/.bash_login" || true
+  alias_managed_block_present "$HOME/.profile" || true
+  alias_managed_block_present "${ZDOTDIR:-$HOME}/.zshrc" || true
+  alias_managed_block_present \
+    "${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish" || true
+}
+
+managed_configuration_present() {
+  local config_file="${CODEX_HOME:-$HOME/.codex}/config.toml"
+
+  managed_block_present "$config_file" "$KEYMAP_MARKER_START" "$KEYMAP_MARKER_END" &&
+    return 0
+  alias_managed_block_present "$HOME/.bashrc" && return 0
+  alias_managed_block_present "$HOME/.bash_profile" && return 0
+  alias_managed_block_present "$HOME/.bash_login" && return 0
+  alias_managed_block_present "$HOME/.profile" && return 0
+  alias_managed_block_present "${ZDOTDIR:-$HOME}/.zshrc" && return 0
+  alias_managed_block_present \
+    "${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish" && return 0
+  return 1
+}
+
 write_alias_block() {
   local alias_line=$1
   local config_file=$2
@@ -432,21 +495,25 @@ configure_alias_file() {
   say "configured $shell_name alias in $config_file"
 }
 
+bash_login_config() {
+  if [ -f "$HOME/.bash_profile" ]; then
+    printf '%s\n' "$HOME/.bash_profile"
+  elif [ -f "$HOME/.bash_login" ]; then
+    printf '%s\n' "$HOME/.bash_login"
+  elif [ -f "$HOME/.profile" ]; then
+    printf '%s\n' "$HOME/.profile"
+  elif [ "$(uname -s 2>/dev/null || true)" = "Darwin" ]; then
+    printf '%s\n' "$HOME/.bash_profile"
+  fi
+}
+
 configure_alias() {
   local shell_name=$1
   local login_config=""
 
   case "$shell_name" in
     bash)
-      if [ -f "$HOME/.bash_profile" ]; then
-        login_config="$HOME/.bash_profile"
-      elif [ -f "$HOME/.bash_login" ]; then
-        login_config="$HOME/.bash_login"
-      elif [ -f "$HOME/.profile" ]; then
-        login_config="$HOME/.profile"
-      elif [ "$(uname -s 2>/dev/null || true)" = "Darwin" ]; then
-        login_config="$HOME/.bash_profile"
-      fi
+      login_config=$(bash_login_config)
 
       managed_block_present "$HOME/.bashrc" "$MARKER_START" "$MARKER_END" || true
       if [ -n "$login_config" ]; then
@@ -464,6 +531,116 @@ configure_alias() {
       configure_alias_file fish "${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish"
       ;;
   esac
+}
+
+CONFIGURED_ALIAS_FILES=()
+REFRESHED_MANAGED_ALIAS_FILES=0
+EXISTING_MANUAL_ALIAS_FILES=0
+
+add_configured_alias_file() {
+  local config_file=$1
+  local existing
+
+  if [ "${#CONFIGURED_ALIAS_FILES[@]}" -gt 0 ]; then
+    for existing in "${CONFIGURED_ALIAS_FILES[@]}"; do
+      [ "$existing" = "$config_file" ] && return 0
+    done
+  fi
+  CONFIGURED_ALIAS_FILES+=("$config_file")
+}
+
+configured_alias_file_present() {
+  local config_file=$1
+  local existing
+
+  if [ "${#CONFIGURED_ALIAS_FILES[@]}" -gt 0 ]; then
+    for existing in "${CONFIGURED_ALIAS_FILES[@]}"; do
+      [ "$existing" = "$config_file" ] && return 0
+    done
+  fi
+  return 1
+}
+
+shell_alias_fully_configured() {
+  local shell_name=$1
+  local login_config=""
+
+  case "$shell_name" in
+    bash)
+      configured_alias_file_present "$HOME/.bashrc" || return 1
+      login_config=$(bash_login_config)
+      [ -z "$login_config" ] || configured_alias_file_present "$login_config"
+      ;;
+    zsh)
+      configured_alias_file_present "${ZDOTDIR:-$HOME}/.zshrc"
+      ;;
+    fish)
+      configured_alias_file_present \
+        "${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish"
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+install_dir_is_unquoted_shell_safe() {
+  case "$INSTALL_DIR" in
+    *[!A-Za-z0-9_./-]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+alias_file_already_configured() {
+  local shell_name=$1
+  local config_file=$2
+
+  [ -f "$config_file" ] || return 1
+  case "$shell_name" in
+    bash|zsh)
+      grep -Fqx "alias codex='$INSTALL_DIR/codex'" "$config_file" || {
+        install_dir_is_unquoted_shell_safe && {
+          grep -Fqx "alias codex=\"$INSTALL_DIR/codex\"" "$config_file" ||
+            grep -Fqx "alias codex=$INSTALL_DIR/codex" "$config_file"
+        }
+      }
+      ;;
+    fish)
+      grep -Fqx "alias codex '$INSTALL_DIR/codex'" "$config_file" || {
+        install_dir_is_unquoted_shell_safe &&
+          grep -Fqx "alias codex \"$INSTALL_DIR/codex\"" "$config_file"
+      }
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+refresh_managed_alias_file() {
+  local shell_name=$1
+  local config_file=$2
+
+  [ -f "$config_file" ] || return 0
+  if alias_managed_block_present "$config_file"; then
+    configure_alias_file "$shell_name" "$config_file"
+    add_configured_alias_file "$config_file"
+    REFRESHED_MANAGED_ALIAS_FILES=$((REFRESHED_MANAGED_ALIAS_FILES + 1))
+  elif alias_file_already_configured "$shell_name" "$config_file"; then
+    say "existing $shell_name alias found in $config_file; leaving it unchanged"
+    add_configured_alias_file "$config_file"
+    EXISTING_MANUAL_ALIAS_FILES=$((EXISTING_MANUAL_ALIAS_FILES + 1))
+  fi
+}
+
+refresh_managed_aliases() {
+  CONFIGURED_ALIAS_FILES=()
+  REFRESHED_MANAGED_ALIAS_FILES=0
+  EXISTING_MANUAL_ALIAS_FILES=0
+
+  refresh_managed_alias_file bash "$HOME/.bashrc"
+  refresh_managed_alias_file bash "$HOME/.bash_profile"
+  refresh_managed_alias_file bash "$HOME/.bash_login"
+  refresh_managed_alias_file bash "$HOME/.profile"
+  refresh_managed_alias_file zsh "${ZDOTDIR:-$HOME}/.zshrc"
+  refresh_managed_alias_file fish \
+    "${XDG_CONFIG_HOME:-$HOME/.config}/fish/config.fish"
 }
 
 print_keymap_snippet() {
@@ -494,6 +671,8 @@ except Exception:
 
 tui = data.get("tui", {})
 keymap = tui.get("keymap", {}) if isinstance(tui, dict) else {}
+composer_present = isinstance(keymap, dict) and "composer" in keymap
+editor_present = isinstance(keymap, dict) and "editor" in keymap
 composer = keymap.get("composer", {}) if isinstance(keymap, dict) else {}
 editor = keymap.get("editor", {}) if isinstance(keymap, dict) else {}
 submit = composer.get("submit", []) if isinstance(composer, dict) else []
@@ -503,7 +682,7 @@ if isinstance(submit, list) and "ctrl-m" in submit:
     if not isinstance(newlines, list) or "ctrl-m" not in newlines:
         raise SystemExit(5)
 
-if composer or editor:
+if composer_present or editor_present:
     raise SystemExit(2)
 raise SystemExit(0)
 PY
@@ -626,11 +805,50 @@ configure_codex_keymap() {
   say "configured the Ctrl-M keymap in $config_file"
 }
 
+classify_codex_keymap() {
+  local codex_dir=${CODEX_HOME:-"$HOME/.codex"}
+  local config_file="$codex_dir/config.toml"
+  local inspect_status=0
+
+  if [ ! -f "$config_file" ]; then
+    printf '%s\n' absent
+    return 0
+  fi
+
+  if inspect_codex_keymap "$config_file"; then
+    printf '%s\n' absent
+    return 0
+  else
+    inspect_status=$?
+  fi
+
+  case "$inspect_status" in
+    2) printf '%s\n' conflict ;;
+    4) printf '%s\n' invalid ;;
+    5) printf '%s\n' compatible ;;
+    3)
+      if grep -Eq '^([[:space:]]*\[tui\.keymap\.(composer|editor)\]|[[:space:]]*tui\.keymap\.(composer|editor)\.)' \
+           "$config_file" ||
+         grep -Eq "^[[:space:]]*['\"]?tui['\"]?[[:space:]]*(=|\.)" "$config_file"; then
+        printf '%s\n' conflict
+      else
+        printf '%s\n' absent
+      fi
+      ;;
+    *) printf '%s\n' absent ;;
+  esac
+}
+
 main() {
+  local codex_dir=${CODEX_HOME:-"$HOME/.codex"}
+  local config_file="$codex_dir/config.toml"
+  local keymap_state=""
+  local missing_shells=()
   local shell_name
   local shell_list=""
 
   say "installing from https://github.com/$REPO"
+  preflight_managed_configs
   validate_destination
   install_dependencies
   download_wrapper
@@ -639,31 +857,78 @@ main() {
   python3 "$INSTALL_DIR/codex-watch" --help >/dev/null
   say "$INSTALL_ACTION codex and codex-watch in $INSTALL_DIR"
 
-  say "Ctrl-M submit lets the watcher submit /goal resume; arrow keys and Return activate Keep waiting."
-  say "Without it, Codex may only insert a newline or leave the automatic reply unsubmitted."
-  if prompt_yes_no "Append the required Ctrl-M keymap to the Codex config?"; then
+  if managed_block_present "$config_file" "$KEYMAP_MARKER_START" "$KEYMAP_MARKER_END"; then
+    say "refreshing the existing installer-managed Ctrl-M keymap"
     configure_codex_keymap ||
       die "keymap setup failed; merge the displayed values and rerun the installer"
   else
-    say "keymap not changed; automatic replies may not be submitted"
+    keymap_state=$(classify_codex_keymap)
+    case "$keymap_state" in
+      compatible)
+        say "compatible Codex Ctrl-M keymap found in $config_file; leaving it unchanged"
+        ;;
+      conflict)
+        say "existing Codex composer/editor keymap found in $config_file"
+        say "leaving it unchanged; merge these values manually to enable automatic replies:"
+        print_keymap_snippet >&2
+        ;;
+      invalid)
+        say "existing Codex config is not valid TOML: $config_file"
+        say "leaving it unchanged; fix the config before adding the Ctrl-M keymap"
+        ;;
+      absent)
+        if [ "$INSTALL_ACTION" = "updated" ]; then
+          say "no installer-managed Codex keymap found; leaving the config unchanged"
+        else
+          say "Ctrl-M submit lets the watcher submit /goal resume; arrow keys and Return activate Keep waiting."
+          say "Without it, Codex may only insert a newline or leave the automatic reply unsubmitted."
+          if prompt_yes_no "Append the required Ctrl-M keymap to the Codex config?"; then
+            configure_codex_keymap ||
+              die "keymap setup failed; merge the displayed values and rerun the installer"
+          else
+            say "keymap not changed; automatic replies may not be submitted"
+          fi
+        fi
+        ;;
+    esac
   fi
 
+  refresh_managed_aliases
   detect_shells
   for shell_name in "${DETECTED_SHELLS[@]}"; do
-    if [ -n "$shell_list" ]; then
-      shell_list="$shell_list, $shell_name"
-    else
-      shell_list=$shell_name
+    if ! shell_alias_fully_configured "$shell_name"; then
+      missing_shells+=("$shell_name")
     fi
   done
 
-  if prompt_yes_no "Override the interactive codex command with the wrapper alias for: $shell_list?"; then
-    for shell_name in "${DETECTED_SHELLS[@]}"; do
-      configure_alias "$shell_name"
-    done
-    say "open a new shell (or source its config) before running codex"
+  if [ "$REFRESHED_MANAGED_ALIAS_FILES" -gt 0 ]; then
+    say "refreshed existing installer-managed shell aliases"
+  fi
+  if [ "$EXISTING_MANUAL_ALIAS_FILES" -gt 0 ]; then
+    say "equivalent existing shell aliases were left unchanged"
+  fi
+
+  if [ "${#missing_shells[@]}" -eq 0 ]; then
+    say "all detected shell aliases are already configured; no alias prompt needed"
+  elif [ "$INSTALL_ACTION" = "updated" ]; then
+    say "leaving shell configs without installer-managed aliases unchanged"
   else
-    say "alias not changed; run the wrapper directly as $INSTALL_DIR/codex"
+    for shell_name in "${missing_shells[@]}"; do
+      if [ -n "$shell_list" ]; then
+        shell_list="$shell_list, $shell_name"
+      else
+        shell_list=$shell_name
+      fi
+    done
+
+    if prompt_yes_no "Override the interactive codex command with the wrapper alias for: $shell_list?"; then
+      for shell_name in "${missing_shells[@]}"; do
+        configure_alias "$shell_name"
+      done
+      say "open a new shell (or source its config) before running codex"
+    else
+      say "aliases not added; run the wrapper directly as $INSTALL_DIR/codex"
+    fi
   fi
 
   say "installation complete; real Codex: $REAL_CODEX_PATH"
