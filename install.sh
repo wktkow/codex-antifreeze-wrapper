@@ -856,6 +856,9 @@ main() {
   bash -n "$INSTALL_DIR/codex"
   python3 "$INSTALL_DIR/codex-watch" --help >/dev/null
   say "$INSTALL_ACTION codex and codex-watch in $INSTALL_DIR"
+  if [ "$INSTALL_ACTION" = "updated" ]; then
+    say "restart existing Codex tmux sessions to load the updated watcher"
+  fi
 
   if managed_block_present "$config_file" "$KEYMAP_MARKER_START" "$KEYMAP_MARKER_END"; then
     say "refreshing the existing installer-managed Ctrl-M keymap"

@@ -33,7 +33,8 @@ Reruns do not repeat optional keymap or alias questions: existing
 installer-managed pieces are refreshed automatically, while absent optional
 pieces are left unchanged. Equivalent manual keymap and alias settings are
 detected and left untouched. Missing required dependencies may still require
-confirmation.
+confirmation. A rerun repairs the files on disk; restart any Codex tmux sessions
+that were already running so they load the updated watcher process.
 
 Codex must treat `Ctrl-M` as submit. Add this to `~/.codex/config.toml`:
 

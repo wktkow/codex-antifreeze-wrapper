@@ -135,6 +135,95 @@ insert_newline = ["ctrl-j", "shift-enter", "alt-enter"]
 """
         )
 
+    def test_rerun_repairs_old_managed_binaries_without_prompting(self):
+        self.install_dir.mkdir()
+        wrapper = self.install_dir / "codex"
+        watcher = self.install_dir / "codex-watch"
+        self.write_executable(
+            wrapper,
+            "#!/bin/sh\n# codex-antifreeze-wrapper managed executable\n"
+            "echo BROKEN_OLD_WRAPPER\n",
+        )
+        self.write_executable(
+            watcher,
+            "#!/usr/bin/env python3\n"
+            "# codex-antifreeze-wrapper managed watcher\n"
+            "print('BROKEN_OLD_WATCHER')\n",
+        )
+
+        returncode, output = self.run_without_input()
+
+        self.assertEqual(returncode, 0, output.decode(errors="replace"))
+        self.assertNotIn(b"[Y/n]", output)
+        self.assertIn(b"updated codex and codex-watch", output)
+        self.assertIn(b"restart existing Codex tmux sessions", output)
+        self.assertEqual(wrapper.read_bytes(), (REPO_DIR / "codex").read_bytes())
+
+        installed_watcher_lines = watcher.read_bytes().splitlines(keepends=True)
+        source_watcher_lines = (REPO_DIR / "codex-watch").read_bytes().splitlines(
+            keepends=True
+        )
+        self.assertTrue(installed_watcher_lines[0].startswith(b"#!"))
+        self.assertEqual(installed_watcher_lines[1:], source_watcher_lines[1:])
+        self.assertNotIn(b"BROKEN_OLD", wrapper.read_bytes())
+        self.assertNotIn(b"BROKEN_OLD", watcher.read_bytes())
+        self.assertTrue(os.access(wrapper, os.X_OK))
+        self.assertTrue(os.access(watcher, os.X_OK))
+
+        subprocess.run(["/bin/bash", "-n", str(wrapper)], check=True)
+        subprocess.run(
+            [str(watcher), "--help"],
+            capture_output=True,
+            timeout=5,
+            check=True,
+        )
+
+    def test_rerun_repairs_partial_managed_install_without_prompting(self):
+        original_install_dir = self.install_dir
+
+        try:
+            for existing_piece in ("wrapper", "watcher"):
+                with self.subTest(existing_piece=existing_piece):
+                    self.install_dir = self.temp_dir / f"bin-{existing_piece}"
+                    self.install_dir.mkdir()
+
+                    if existing_piece == "wrapper":
+                        self.write_executable(
+                            self.install_dir / "codex",
+                            "#!/bin/sh\n"
+                            "# codex-antifreeze-wrapper managed executable\n"
+                            "echo BROKEN_PARTIAL_WRAPPER\n",
+                        )
+                    else:
+                        self.write_executable(
+                            self.install_dir / "codex-watch",
+                            "#!/usr/bin/env python3\n"
+                            "# codex-antifreeze-wrapper managed watcher\n"
+                            "print('BROKEN_PARTIAL_WATCHER')\n",
+                        )
+
+                    returncode, output = self.run_without_input()
+
+                    self.assertEqual(
+                        returncode, 0, output.decode(errors="replace")
+                    )
+                    self.assertNotIn(b"[Y/n]", output)
+                    self.assertIn(b"updated codex and codex-watch", output)
+                    self.assertEqual(
+                        (self.install_dir / "codex").read_bytes(),
+                        (REPO_DIR / "codex").read_bytes(),
+                    )
+                    self.assertEqual(
+                        (self.install_dir / "codex-watch")
+                        .read_bytes()
+                        .splitlines(keepends=True)[1:],
+                        (REPO_DIR / "codex-watch")
+                        .read_bytes()
+                        .splitlines(keepends=True)[1:],
+                    )
+        finally:
+            self.install_dir = original_install_dir
+
     def test_managed_rerun_refreshes_without_prompting(self):
         self.install_with_yes()
         zshrc = self.home / ".zshrc"
