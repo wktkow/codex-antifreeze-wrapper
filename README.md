@@ -90,7 +90,18 @@ export CODEX_WATCH_REPLY='/goal resume'
 export CODEX_WATCH_SUBMIT_KEY=ctrl-m
 export CODEX_WATCH_COOLDOWN=4
 export CODEX_WATCH_SAFETY_CHECK_COOLDOWN=4
+# Optional diagnostics go to a file, never into the live Codex screen.
+export CODEX_WATCH_LOG=/tmp/codex-watch.log
 ```
+
+For the additional-safety-checks menu, the watcher sends only one arrow at a
+time. It waits for a later terminal redraw that visibly marks `Keep waiting` as
+active before sending Return. Each displayed menu is handled at most once; if
+the selection cannot be confirmed, it leaves the menu for manual input.
+
+Normal output matches are also handled once per displayed tmux-screen episode.
+The watcher rearms only after the matched text has disappeared from the pane,
+so a frozen or fragmented redraw cannot repeatedly inject the configured reply.
 
 Useful switches:
 

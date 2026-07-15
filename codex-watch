@@ -23,7 +23,13 @@ SAFETY_CHECK_PROMPT_PARTS = (
 AUTO_RETURN_SAFETY_CHECKS = True
 SAFETY_CHECK_COOLDOWN_SECONDS = 4
 SAFETY_CHECK_MENU_MAX_OPTIONS = 3
-SAFETY_CHECK_KEY_DELAY_SECONDS = 0.05
+SAFETY_CHECK_SCREEN_SETTLE_SECONDS = 0.04
+SAFETY_CHECK_CONFIRM_TIMEOUT_SECONDS = 2.0
+SAFETY_CHECK_DISMISS_CONFIRM_SECONDS = 0.15
+
+# Runtime messages must not be written into Codex's full-screen terminal UI.
+# Set CODEX_WATCH_LOG to a file path if diagnostic messages are needed.
+RUNTIME_LOG_FILE = ""
 
 MIN_SECONDS_BETWEEN_UNFREEZES = 4
 MAX_UNFREEZES_PER_WINDOW = 0
@@ -57,6 +63,7 @@ ANSI_RE = re.compile(
 )
 KEEP_WAITING_OPTION_RE = re.compile(r"(?<!\d)(\d+)\.\s*Keep waiting\b")
 ACTIVE_OPTION_RE = re.compile(r"›\s*(\d+)\.\s*[^\r\n]+")
+ACTIVE_KEEP_WAITING_OPTION_RE = re.compile(r"›\s*(\d+)\.\s*Keep waiting\b")
 ARROW_UP_SEQUENCE = b"\x1b[A"
 ARROW_DOWN_SEQUENCE = b"\x1b[B"
 RETURN_SEQUENCE = b"\r"
@@ -85,6 +92,16 @@ def safety_check_option_indices(buffer: str):
     ):
         return None
     return active_index, keep_waiting_index
+
+
+def latest_active_option_index(buffer: str):
+    matches = ACTIVE_OPTION_RE.findall(buffer)
+    return int(matches[-1]) if matches else None
+
+
+def latest_active_keep_waiting_index(buffer: str):
+    matches = ACTIVE_KEEP_WAITING_OPTION_RE.findall(buffer)
+    return int(matches[-1]) if matches else None
 
 
 def keep_waiting_key_sequence(active_index: int, keep_waiting_index: int):
@@ -273,6 +290,14 @@ def parse_args():
         default=env_bool("CODEX_WATCH_NO_TMUX_DETACH_HOTKEY", False),
         help="Do not intercept Ctrl-b then d as tmux detach inside tmux.",
     )
+    parser.add_argument(
+        "--log-file",
+        default=env_or_default("CODEX_WATCH_LOG", RUNTIME_LOG_FILE),
+        help=(
+            "Append watcher diagnostics to this file. Diagnostics are silent by "
+            "default so they cannot corrupt the Codex terminal UI."
+        ),
+    )
     parser.add_argument("cmd", nargs=argparse.REMAINDER)
 
     args = parser.parse_args()
@@ -303,6 +328,18 @@ def main() -> int:
         print(f"codex-watch: {e}", file=sys.stderr)
         return 2
 
+    try:
+        pattern = (
+            re.compile(args.pattern, re.IGNORECASE | re.DOTALL)
+            if args.pattern
+            else None
+        )
+    except re.error as e:
+        print(f"codex-watch: invalid --pattern: {e}", file=sys.stderr)
+        return 2
+
+    match_text = args.match
+
     stdin_fd = sys.stdin.fileno()
     stdout_fd = sys.stdout.fileno()
 
@@ -326,26 +363,32 @@ def main() -> int:
         except OSError:
             pass
 
+    def forward_termination(signum, _frame=None):
+        try:
+            os.kill(pid, signum)
+        except ProcessLookupError:
+            pass
+
     signal.signal(signal.SIGWINCH, resize_child)
+    for termination_signal in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+        signal.signal(termination_signal, forward_termination)
     resize_child()
 
-    pattern = re.compile(args.pattern, re.IGNORECASE | re.DOTALL) if args.pattern else None
-    match_text = args.match
     recent = ""
     safety_raw_recent = ""
     safety_recent = ""
     match_latched = False
     latched_notice_sent = False
+    match_probe_due = 0.0
+    match_absent_since = None
     last_sent = 0.0
     last_output = time.monotonic()
     reply_times = []
     circuit_breaker_open = False
-    pending_match_reason = ""
-    pending_match_due = 0.0
-    safety_check_latched = False
     last_safety_return = None
     output_decoder = codecs.getincrementaldecoder("utf-8")(errors="ignore")
     tmux_bin = os.getenv("CODEX_WATCH_TMUX_BIN", "tmux")
+    tmux_pane = os.getenv("TMUX_PANE", "") if os.getenv("TMUX") else ""
     tmux_detach_hotkey_enabled = (
         ENABLE_CTRL_B_D_TMUX_DETACH
         and not args.no_tmux_detach_hotkey
@@ -353,6 +396,17 @@ def main() -> int:
     )
     tmux_prefix_pending = False
     tmux_prefix_pending_at = 0.0
+    safety_state = "armed"
+    safety_probe_due = 0.0
+    safety_confirmation_deadline = 0.0
+    safety_current_index = None
+    safety_expected_index = None
+    safety_target_index = None
+    safety_confirmation_raw_recent = ""
+    safety_confirmation_recent = ""
+    safety_output_generation = 0
+    safety_action_output_generation = 0
+    safety_absent_since = None
 
     def current_match_reason(buffer: str) -> str:
         if pattern and pattern.search(buffer):
@@ -365,22 +419,26 @@ def main() -> int:
         return all(part in buffer for part in SAFETY_CHECK_PROMPT_PARTS)
 
     def notice(message: str):
-        os.write(stdout_fd, f"\r\n[codex-watch: {message}]\r\n".encode())
-
-    def clear_pending_match():
-        nonlocal pending_match_reason, pending_match_due
-
-        pending_match_reason = ""
-        pending_match_due = 0.0
-
-    def schedule_pending_match(reason: str, retry_at: float):
-        nonlocal pending_match_reason, pending_match_due
-
-        if retry_at <= time.monotonic():
+        if not args.log_file:
             return
 
-        pending_match_reason = reason
-        pending_match_due = retry_at
+        try:
+            with open(args.log_file, "a", encoding="utf-8") as log:
+                timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+                log.write(f"{timestamp} codex-watch: {message}\n")
+        except OSError:
+            # Diagnostics must never interfere with the interactive child.
+            pass
+
+    def schedule_match_probe(delay: float = SAFETY_CHECK_SCREEN_SETTLE_SECONDS):
+        nonlocal match_probe_due
+
+        if not tmux_pane or args.no_strip_ansi:
+            return
+
+        due = time.monotonic() + max(0.0, delay)
+        if match_probe_due == 0.0 or due < match_probe_due:
+            match_probe_due = due
 
     def detach_tmux_client() -> bool:
         try:
@@ -462,7 +520,7 @@ def main() -> int:
         if now - last_sent < args.cooldown:
             remaining = args.cooldown - (now - last_sent)
             notice(f"suppressed reply: cooldown active for {remaining:.1f}s")
-            return False, last_sent + args.cooldown
+            return False
 
         if args.max_unfreezes > 0 and args.window > 0:
             reply_times = [sent_at for sent_at in reply_times if now - sent_at < args.window]
@@ -474,7 +532,7 @@ def main() -> int:
                         "not auto-sending"
                     )
                 circuit_breaker_open = True
-                return False, min(reply_times) + args.window
+                return False
 
         circuit_breaker_open = False
 
@@ -495,7 +553,7 @@ def main() -> int:
                 os.write(master_fd, submit_sequence)
         except OSError as e:
             if e.errno in (errno.EIO, errno.EBADF):
-                return False, 0.0
+                return False
             raise
 
         last_sent = now
@@ -503,56 +561,263 @@ def main() -> int:
         reply_times.append(now)
 
         notice(f"auto-sent reply: {reason}")
-        return True, last_sent + args.cooldown
+        return True
 
-    def send_or_schedule_match(reason: str):
-        sent, retry_at = send_reply(reason)
-        if retry_at > 0:
-            schedule_pending_match(reason, retry_at)
-        if sent:
-            return True
-        return False
+    def schedule_safety_probe(delay: float = SAFETY_CHECK_SCREEN_SETTLE_SECONDS):
+        nonlocal safety_probe_due
 
-    def send_safety_return():
-        nonlocal last_safety_return
+        due = time.monotonic() + max(0.0, delay)
+        if safety_probe_due == 0.0 or due < safety_probe_due:
+            safety_probe_due = due
 
-        selection = safety_check_option_indices(safety_recent)
-        if selection is None:
-            notice(
-                "did not auto-submit safety check: active and Keep waiting "
-                "options could not be identified"
-            )
-            return "unavailable"
-
-        now = time.monotonic()
-        if (
-            last_safety_return is not None
-            and now - last_safety_return < args.safety_check_cooldown
-        ):
-            remaining = args.safety_check_cooldown - (now - last_safety_return)
-            notice(
-                "suppressed Keep waiting selection: "
-                f"cooldown active for {remaining:.1f}s"
-            )
-            return "suppressed"
+    def capture_safety_screen():
+        if not tmux_pane:
+            return safety_recent, False
 
         try:
-            keys = keep_waiting_key_sequence(*selection)
-            for key_index, key in enumerate(keys):
-                os.write(master_fd, key)
-                if key_index < len(keys) - 1:
-                    time.sleep(SAFETY_CHECK_KEY_DELAY_SECONDS)
+            result = subprocess.run(
+                [tmux_bin, "capture-pane", "-p", "-J", "-t", tmux_pane],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=0.5,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None, True
+
+        if result.returncode != 0:
+            return None, True
+
+        return strip_ansi(result.stdout.decode(errors="ignore")), True
+
+    def run_match_probe():
+        nonlocal match_probe_due, match_absent_since, match_latched, recent
+
+        match_probe_due = 0.0
+        screen, authoritative = capture_safety_screen()
+        if not authoritative:
+            return
+        if screen is None:
+            schedule_match_probe(0.2)
+            return
+
+        now = time.monotonic()
+        if current_match_reason(screen):
+            match_absent_since = None
+            return
+
+        if match_absent_since is None:
+            match_absent_since = now
+            schedule_match_probe(SAFETY_CHECK_DISMISS_CONFIRM_SECONDS)
+            return
+
+        if now - match_absent_since < SAFETY_CHECK_DISMISS_CONFIRM_SECONDS:
+            schedule_match_probe(
+                SAFETY_CHECK_DISMISS_CONFIRM_SECONDS
+                - (now - match_absent_since)
+            )
+            return
+
+        match_latched = False
+        match_absent_since = None
+        recent = ""
+        notice("re-armed output match after it disappeared from the tmux pane")
+
+    def mark_safety_handled(message: str):
+        nonlocal safety_state, safety_probe_due, safety_confirmation_deadline
+        nonlocal safety_absent_since
+
+        safety_state = "handled"
+        safety_probe_due = 0.0
+        safety_confirmation_deadline = 0.0
+        safety_absent_since = None
+        notice(message)
+
+    def send_safety_key(key: bytes) -> bool:
+        try:
+            os.write(master_fd, key)
+            return True
         except OSError as e:
             if e.errno in (errno.EIO, errno.EBADF):
-                return "closed"
+                mark_safety_handled("safety-check terminal closed")
+                return False
             raise
 
-        last_safety_return = now
-        notice(
-            "auto-selected Keep waiting with arrow keys and sent Return: "
-            "additional safety checks"
+    def begin_safety_navigation(active_index: int, keep_waiting_index: int):
+        nonlocal safety_state, safety_confirmation_deadline
+        nonlocal safety_current_index, safety_expected_index, safety_target_index
+        nonlocal safety_confirmation_raw_recent, safety_confirmation_recent
+        nonlocal safety_action_output_generation
+
+        direction = 1 if active_index < keep_waiting_index else -1
+        key = ARROW_DOWN_SEQUENCE if direction > 0 else ARROW_UP_SEQUENCE
+
+        safety_state = "awaiting-selection"
+        safety_current_index = active_index
+        safety_expected_index = active_index + direction
+        safety_target_index = keep_waiting_index
+        safety_confirmation_raw_recent = ""
+        safety_confirmation_recent = ""
+        safety_action_output_generation = safety_output_generation
+        safety_confirmation_deadline = (
+            time.monotonic() + SAFETY_CHECK_CONFIRM_TIMEOUT_SECONDS
         )
-        return "sent"
+
+        if not send_safety_key(key):
+            return
+
+        notice(
+            "sent one arrow while waiting for Keep waiting selection confirmation"
+        )
+
+    def submit_confirmed_keep_waiting():
+        nonlocal last_safety_return
+
+        if not send_safety_key(RETURN_SEQUENCE):
+            return
+
+        last_safety_return = time.monotonic()
+        mark_safety_handled(
+            "sent Return after observing Keep waiting as the active option"
+        )
+
+    def rearm_safety_check():
+        nonlocal safety_state, safety_raw_recent, safety_recent
+        nonlocal safety_confirmation_raw_recent, safety_confirmation_recent
+        nonlocal safety_absent_since
+
+        safety_state = "armed"
+        safety_raw_recent = ""
+        safety_recent = ""
+        safety_confirmation_raw_recent = ""
+        safety_confirmation_recent = ""
+        safety_absent_since = None
+
+    def run_safety_probe():
+        nonlocal safety_probe_due, safety_absent_since
+        nonlocal safety_current_index, safety_expected_index
+        nonlocal safety_confirmation_raw_recent, safety_confirmation_recent
+        nonlocal safety_action_output_generation
+        nonlocal safety_confirmation_deadline
+
+        safety_probe_due = 0.0
+        now = time.monotonic()
+
+        if (
+            safety_state == "awaiting-selection"
+            and now >= safety_confirmation_deadline
+        ):
+            mark_safety_handled(
+                "did not send Return because selection confirmation timed out"
+            )
+            return
+
+        screen, authoritative = capture_safety_screen()
+        if screen is None:
+            if safety_state == "awaiting-selection":
+                schedule_safety_probe(0.1)
+            elif safety_state == "handled":
+                schedule_safety_probe(0.2)
+            return
+
+        if safety_state == "armed":
+            selection = safety_check_option_indices(screen)
+            if selection is None:
+                return
+
+            active_index, keep_waiting_index = selection
+            if (
+                last_safety_return is not None
+                and now - last_safety_return < args.safety_check_cooldown
+            ):
+                schedule_safety_probe(
+                    args.safety_check_cooldown - (now - last_safety_return)
+                )
+                return
+
+            if active_index == keep_waiting_index:
+                submit_confirmed_keep_waiting()
+            else:
+                begin_safety_navigation(active_index, keep_waiting_index)
+            return
+
+        if safety_state == "awaiting-selection":
+            if safety_output_generation <= safety_action_output_generation:
+                return
+
+            prompt_present = safety_check_prompt_present(screen)
+            if authoritative and not prompt_present:
+                mark_safety_handled(
+                    "did not send Return because the safety-check menu disappeared"
+                )
+                return
+
+            observed_active = latest_active_option_index(screen)
+            if not authoritative:
+                observed_active = latest_active_option_index(
+                    safety_confirmation_recent
+                )
+
+            if observed_active == safety_current_index:
+                return
+
+            if observed_active != safety_expected_index:
+                if observed_active is not None:
+                    mark_safety_handled(
+                        "did not send Return because the active option changed unexpectedly"
+                    )
+                return
+
+            safety_current_index = observed_active
+
+            if safety_current_index == safety_target_index:
+                confirmation_text = screen if authoritative else safety_confirmation_recent
+                if (
+                    latest_active_keep_waiting_index(confirmation_text)
+                    != safety_target_index
+                ):
+                    return
+                submit_confirmed_keep_waiting()
+                return
+
+            direction = 1 if safety_current_index < safety_target_index else -1
+            key = ARROW_DOWN_SEQUENCE if direction > 0 else ARROW_UP_SEQUENCE
+            safety_expected_index = safety_current_index + direction
+            safety_confirmation_raw_recent = ""
+            safety_confirmation_recent = ""
+            safety_action_output_generation = safety_output_generation
+            safety_confirmation_deadline = (
+                now + SAFETY_CHECK_CONFIRM_TIMEOUT_SECONDS
+            )
+            send_safety_key(key)
+            return
+
+        if safety_state == "handled" and authoritative:
+            if safety_check_prompt_present(screen):
+                safety_absent_since = None
+                return
+
+            if safety_absent_since is None:
+                safety_absent_since = now
+                schedule_safety_probe(SAFETY_CHECK_DISMISS_CONFIRM_SECONDS)
+                return
+
+            cooldown_finished = (
+                last_safety_return is None
+                or now - last_safety_return >= args.safety_check_cooldown
+            )
+            if (
+                now - safety_absent_since >= SAFETY_CHECK_DISMISS_CONFIRM_SECONDS
+                and cooldown_finished
+            ):
+                rearm_safety_check()
+                return
+
+            waits = [SAFETY_CHECK_DISMISS_CONFIRM_SECONDS]
+            if last_safety_return is not None and not cooldown_finished:
+                waits.append(args.safety_check_cooldown - (now - last_safety_return))
+            schedule_safety_probe(max(0.01, min(waits)))
 
     try:
         while True:
@@ -561,7 +826,19 @@ def main() -> int:
             if os.isatty(stdin_fd):
                 read_fds.append(stdin_fd)
 
-            ready, _, _ = select.select(read_fds, [], [], 1.0)
+            select_timeout = 1.0
+            now = time.monotonic()
+            if match_probe_due > 0.0:
+                select_timeout = min(select_timeout, max(0.0, match_probe_due - now))
+            if safety_probe_due > 0.0:
+                select_timeout = min(select_timeout, max(0.0, safety_probe_due - now))
+            if safety_state == "awaiting-selection":
+                select_timeout = min(
+                    select_timeout,
+                    max(0.0, safety_confirmation_deadline - now),
+                )
+
+            ready, _, _ = select.select(read_fds, [], [], select_timeout)
 
             if master_fd in ready:
                 try:
@@ -588,35 +865,35 @@ def main() -> int:
                 safety_recent = strip_ansi(safety_raw_recent)[-args.buffer:]
 
                 if not args.no_safety_check_return:
-                    safety_prompt_present = safety_check_prompt_present(safety_recent)
-                    if safety_prompt_present:
-                        if not safety_check_latched:
-                            result = send_safety_return()
-                            if result in {"sent", "suppressed"}:
-                                safety_check_latched = True
-                                safety_raw_recent = ""
-                                safety_recent = ""
-                    elif safety_check_latched and text.strip():
-                        safety_check_latched = False
+                    safety_output_generation += 1
+                    if safety_state == "awaiting-selection":
+                        safety_confirmation_raw_recent = (
+                            safety_confirmation_raw_recent + raw_text
+                        )[-(args.buffer * 2) :]
+                        safety_confirmation_recent = strip_ansi(
+                            safety_confirmation_raw_recent
+                        )[-args.buffer:]
+
+                    if (
+                        safety_state != "armed"
+                        or safety_check_prompt_present(safety_recent)
+                    ):
+                        schedule_safety_probe()
 
                 reason = current_match_reason(recent)
 
                 if reason:
                     if not match_latched:
-                        send_or_schedule_match(reason)
+                        send_reply(reason)
                         latched_notice_sent = False
                     elif not latched_notice_sent:
-                        if pending_match_reason:
-                            notice("suppressed reply: match still latched; retry scheduled")
-                        else:
-                            notice("suppressed reply: match still latched")
+                        notice("suppressed reply: match still latched")
                         latched_notice_sent = True
                     match_latched = True
                     recent = ""
-                elif match_latched and text.strip():
-                    match_latched = False
-                    latched_notice_sent = False
-                    clear_pending_match()
+
+                if match_latched:
+                    schedule_match_probe()
 
             if stdin_fd in ready:
                 data = os.read(stdin_fd, 8192)
@@ -625,12 +902,23 @@ def main() -> int:
 
             flush_pending_tmux_prefix_if_stale()
 
-            if pending_match_reason and time.monotonic() >= pending_match_due:
-                reason = pending_match_reason
-                clear_pending_match()
-                send_or_schedule_match(reason)
-                match_latched = True
-                latched_notice_sent = False
+            if match_probe_due > 0.0 and time.monotonic() >= match_probe_due:
+                run_match_probe()
+
+            if (
+                not args.no_safety_check_return
+                and safety_probe_due > 0.0
+                and time.monotonic() >= safety_probe_due
+            ):
+                run_safety_probe()
+
+            if (
+                safety_state == "awaiting-selection"
+                and time.monotonic() >= safety_confirmation_deadline
+            ):
+                mark_safety_handled(
+                    "did not send Return because selection confirmation timed out"
+                )
 
             if args.idle > 0 and time.monotonic() - last_output >= args.idle:
                 send_reply(f"idle {int(args.idle)}s")
@@ -644,7 +932,10 @@ def main() -> int:
 
     finally:
         if old_term is not None:
-            termios.tcsetattr(stdin_fd, termios.TCSADRAIN, old_term)
+            try:
+                termios.tcsetattr(stdin_fd, termios.TCSADRAIN, old_term)
+            except OSError:
+                pass
 
     try:
         _, status = os.waitpid(pid, 0)
