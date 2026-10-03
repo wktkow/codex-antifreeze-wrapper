@@ -4,11 +4,13 @@ import json
 import os
 import pathlib
 import pty
+import select
 import shlex
 import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import termios
 import time
 import unittest
@@ -196,6 +198,198 @@ if os.read(0, 1) != b"X":
 
 os.write(1, b"TWO_MATCHES_OK\n")
 """
+
+
+class EscapeHoldTests(unittest.TestCase):
+    def tap(self, guard, now):
+        return guard.feed(b"\x1b", now) + guard.flush(now + 0.051)
+
+    def test_single_tap_never_interrupts_even_after_waiting(self):
+        guard = codex_watch.EscapeHoldFilter()
+        self.assertEqual(self.tap(guard, 0), b"\x1b")
+        self.assertEqual(guard.flush(30), b"")
+        self.assertIsNone(guard.deadline())
+
+    def test_double_tap_does_not_interrupt(self):
+        guard = codex_watch.EscapeHoldFilter()
+        self.assertEqual(self.tap(guard, 0) + self.tap(guard, 0.1), b"\x1b")
+        self.assertEqual(guard.flush(30), b"")
+
+    def test_sustained_repeat_interrupts_once_and_rearms_after_a_gap(self):
+        guard = codex_watch.EscapeHoldFilter()
+        output = b"".join(self.tap(guard, i / 10) for i in range(15))
+        self.assertEqual(output, b"\x1b" + codex_watch.INTERRUPT_SEQUENCE)
+        output = b"".join(self.tap(guard, 3 + i / 10) for i in range(10))
+        self.assertEqual(output, b"\x1b" + codex_watch.INTERRUPT_SEQUENCE)
+
+    def test_initial_autorepeat_delay_and_slow_taps(self):
+        guard = codex_watch.EscapeHoldFilter()
+        self.assertEqual(self.tap(guard, 0), b"\x1b")
+        output = b"".join(self.tap(guard, 0.7 + i / 10) for i in range(10))
+        self.assertEqual(output, b"\x1b" + codex_watch.INTERRUPT_SEQUENCE)
+        guard = codex_watch.EscapeHoldFilter()
+        output = b"".join(self.tap(guard, i / 2) for i in range(10))
+        self.assertEqual(output, b"\x1b" * 10)
+
+    def test_other_input_breaks_the_hold(self):
+        guard = codex_watch.EscapeHoldFilter()
+        output = b"".join(self.tap(guard, i / 10) for i in range(4))
+        output += guard.feed(b"x", 0.4)
+        output += b"".join(self.tap(guard, 0.5 + i / 10) for i in range(4))
+        self.assertEqual(output, b"\x1bx\x1b")
+
+    def test_escape_batch_without_elapsed_time_cannot_interrupt(self):
+        guard = codex_watch.EscapeHoldFilter()
+        output = guard.feed(b"\x1b" * 100, 0) + guard.flush(1)
+        self.assertEqual(output, b"\x1b")
+
+    def test_every_control_sequence_split_preserves_the_sequence(self):
+        sequences = [
+            b"\x1b[A", b"\x1b[1;5D", b"\x1bOP", b"\x1bf",
+            b"\x1b[<0;10;20M", b"\x1b[I", b"\x1b[?1;2c",
+            b"\x1b]52;c;YWJj\x07", b"\x1b]52;c;YWJj\x1b\\",
+            b"\x1bP1+r5463=31\x1b\\", b"\x1b[27;3u",
+            codex_watch.INTERRUPT_SEQUENCE,
+        ]
+        for sequence in sequences:
+            for split in range(len(sequence) + 1):
+                with self.subTest(sequence=sequence, split=split):
+                    guard = codex_watch.EscapeHoldFilter()
+                    output = guard.feed(sequence[:split], 0)
+                    output += guard.feed(sequence[split:], 0.01)
+                    output += guard.flush(1)
+                    self.assertEqual(output, sequence)
+
+    def test_fragmented_paste_and_terminal_string_do_not_count_escapes(self):
+        streams = [
+            b"\x1b[200~hello\x1b\x1b\x1b[27u\x02d\x1b[201~",
+            b"\x1b]52;c;" + b"\x1b" * 20 + b"\x07",
+        ]
+        for stream in streams:
+            with self.subTest(stream=stream):
+                guard = codex_watch.EscapeHoldFilter()
+                output = b"".join(
+                    guard.feed(bytes([byte]), i * 0.01)
+                    for i, byte in enumerate(stream)
+                ) + guard.flush(30)
+                self.assertEqual(output, stream)
+                self.assertEqual(self.tap(guard, 31), b"\x1b")
+
+    def test_incomplete_sequence_is_flushed_unchanged(self):
+        guard = codex_watch.EscapeHoldFilter()
+        self.assertEqual(guard.feed(b"\x1b[1;", 0), b"")
+        self.assertEqual(guard.flush(0.1), b"\x1b[1;")
+        self.assertIsNone(guard.deadline())
+
+    def test_encoded_escape_repeat_stream(self):
+        for sequence in [b"\x1b[27u", b"\x1b[27;1u", b"\x1b[27;1;27~"]:
+            with self.subTest(sequence=sequence):
+                guard = codex_watch.EscapeHoldFilter()
+                output = b"".join(guard.feed(sequence, i / 10) for i in range(10))
+                self.assertEqual(output, sequence + codex_watch.INTERRUPT_SEQUENCE)
+
+    def test_explicit_press_repeat_and_release_events(self):
+        guard = codex_watch.EscapeHoldFilter()
+        press, repeat, release = b"\x1b[27;1:1u", b"\x1b[27;1:2u", b"\x1b[27;1:3u"
+        self.assertEqual(guard.feed(press, 0), press)
+        self.assertEqual(guard.feed(repeat, 0.6), codex_watch.INTERRUPT_SEQUENCE)
+        self.assertEqual(guard.feed(repeat, 0.7), b"")
+        self.assertEqual(guard.feed(release, 0.8), release)
+        self.assertEqual(guard.feed(press, 0.9), press)
+        self.assertEqual(guard.feed(release, 1), release)
+        self.assertEqual(guard.flush(30), b"")
+
+
+class EscapeHoldIntegrationTests(unittest.TestCase):
+    def run_input(self, options, events):
+        child = r"""
+import os
+import tty
+tty.setraw(0)
+os.write(1, b"INPUT_READY\n")
+received = b""
+while b"\x04" not in received:
+    received += os.read(0, 8192)
+os.write(1, b"RECEIVED=" + received.removesuffix(b"\x04").hex().encode() + b"\n")
+"""
+        env = os.environ.copy()
+        for name in list(env):
+            if name.startswith("CODEX_WATCH_") or name in {"TMUX", "TMUX_PANE"}:
+                env.pop(name)
+        master, slave = pty.openpty()
+        process = None
+        output = b""
+        try:
+            process = subprocess.Popen(
+                [sys.executable, str(MODULE_PATH), "--match", "", *options,
+                 "--", sys.executable, "-c", child],
+                stdin=slave, stdout=slave, stderr=slave, env=env,
+            )
+            deadline = time.monotonic() + 5
+            while b"INPUT_READY" not in output and time.monotonic() < deadline:
+                ready, _, _ = select.select([master], [], [], 0.1)
+                if ready:
+                    output += os.read(master, 8192)
+            self.assertIn(b"INPUT_READY", output)
+            for delay, data in events:
+                time.sleep(delay)
+                os.write(master, data)
+            time.sleep(0.1)
+            os.write(master, b"\x04")
+            # Drain the terminal while waiting: macOS TCSADRAIN at watcher
+            # shutdown can wait for the outer PTY's output to be consumed.
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                if select.select([master], [], [], 0.05)[0]:
+                    output += os.read(master, 8192)
+                elif process.poll() is not None:
+                    break
+            self.assertIsNotNone(process.poll(), output)
+            self.assertEqual(process.returncode, 0, output)
+            return output
+        finally:
+            if process is not None and process.poll() is None:
+                process.terminate()
+                process.wait(timeout=5)
+            os.close(master)
+            os.close(slave)
+
+    def test_real_pty_preserves_tap_keys_and_paste_then_interrupts_once(self):
+        prefix = b"\x1b\x1b[A\x1bf\x1b[200~pasted\x1b\x1b\x1b[201~x"
+        events = [
+            (0, b"\x1b"), (0.3, b"\x1b["), (0.005, b"A\x1bf"),
+            (0.01, b"\x1b[200~pasted\x1b\x1b\x1b[201~x"),
+            *[(0.08, b"\x1b") for _ in range(12)],
+        ]
+        output = self.run_input(["--hold-esc"], events)
+        expected = prefix + b"\x1b" + codex_watch.INTERRUPT_SEQUENCE
+        self.assertIn(b"RECEIVED=" + expected.hex().encode(), output)
+
+    def test_disabled_filter_forwards_every_escape(self):
+        output = self.run_input([], [(0.08, b"\x1b") for _ in range(8)])
+        self.assertIn(b"RECEIVED=" + (b"\x1b" * 8).hex().encode(), output)
+
+    def test_launcher_enables_binding_and_filter_together(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fake_watch = pathlib.Path(directory) / "watch"
+            fake_watch.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\"\n")
+            fake_watch.chmod(0o755)
+            env = {**os.environ, "TMUX": "test", "CODEX_REAL_BIN": "/bin/echo",
+                   "CODEX_WATCH_BIN": str(fake_watch), "CODEX_LINUX_DEP_CHECK": "0"}
+            for name in ["CODEX_WATCH_HOLD_ESC", "CODEX_WATCH_DISABLE"]:
+                env.pop(name, None)
+            launcher = str(MODULE_PATH.with_name("codex"))
+            result = subprocess.run([launcher, "resume", "--last"], env=env,
+                                    capture_output=True, text=True, check=True)
+            self.assertEqual(result.stdout.splitlines(), [
+                "--hold-esc", "--", "/bin/echo", "-c",
+                'tui.keymap.chat.interrupt_turn="f12"', "resume", "--last",
+            ])
+            for disabled in ["0", "false", "OFF", ""]:
+                env["CODEX_WATCH_HOLD_ESC"] = disabled
+                result = subprocess.run([launcher], env=env, capture_output=True,
+                                        text=True, check=True)
+                self.assertEqual(result.stdout.splitlines(), ["--", "/bin/echo"])
 
 
 class SafetyCheckSelectionTests(unittest.TestCase):
@@ -652,6 +846,61 @@ class TerminalLifecycleTests(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("tmux"), "tmux is required")
 class TmuxIntegrationTests(unittest.TestCase):
+    def test_launcher_and_hold_work_through_tmux(self):
+        socket_name = f"codex-watch-esc-test-{uuid.uuid4().hex[:10]}"
+        tmux = [shutil.which("tmux"), "-L", socket_name, "-f", "/dev/null"]
+        env = {name: value for name, value in os.environ.items()
+               if not name.startswith("CODEX_WATCH_") and name not in {"TMUX", "TMUX_PANE"}}
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            ready, result = root / "ready.json", root / "result.json"
+            child = root / "fake-codex"
+            child.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, os, pathlib, sys, tty\n"
+                "tty.setraw(0)\n"
+                f"pathlib.Path({str(ready)!r}).write_text(json.dumps(sys.argv[1:]))\n"
+                "received = b''\n"
+                "while b'\\x04' not in received:\n"
+                "    received += os.read(0, 8192)\n"
+                f"pathlib.Path({str(result)!r}).write_text(json.dumps(received.hex()))\n"
+            )
+            child.chmod(0o755)
+            env["CODEX_REAL_BIN"] = str(child)
+            env["CODEX_WATCH_BIN"] = str(MODULE_PATH)
+            command = shlex.join([str(MODULE_PATH.with_name("codex"))])
+            try:
+                subprocess.run([*tmux, "new-session", "-d", "-s", "test", command],
+                               env=env, check=True, timeout=5)
+                deadline = time.monotonic() + 5
+                while not ready.exists() and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                self.assertTrue(ready.exists(), "wrapped child did not start")
+                self.assertEqual(json.loads(ready.read_text()), [
+                    "-c", 'tui.keymap.chat.interrupt_turn="f12"',
+                ])
+                subprocess.run([*tmux, "send-keys", "-t", "test", "Escape"],
+                               check=True, timeout=5)
+                time.sleep(0.3)
+                subprocess.run([*tmux, "send-keys", "-t", "test", "Up"],
+                               check=True, timeout=5)
+                for _ in range(12):
+                    time.sleep(0.08)
+                    subprocess.run([*tmux, "send-keys", "-t", "test", "Escape"],
+                                   check=True, timeout=5)
+                time.sleep(0.1)
+                subprocess.run([*tmux, "send-keys", "-t", "test", "C-d"],
+                               check=True, timeout=5)
+                deadline = time.monotonic() + 5
+                while not result.exists() and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                self.assertTrue(result.exists(), "wrapped child did not receive input")
+                expected = b"\x1b\x1b[A\x1b" + codex_watch.INTERRUPT_SEQUENCE + b"\x04"
+                self.assertEqual(bytes.fromhex(json.loads(result.read_text())), expected)
+            finally:
+                subprocess.run([*tmux, "kill-server"], stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, check=False, timeout=5)
+
     def run_in_tmux(self, watcher_options, child):
         session_name = f"codex-watch-test-{uuid.uuid4().hex[:10]}"
         watcher_command = shlex.join(

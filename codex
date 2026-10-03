@@ -274,6 +274,14 @@ run_watched_codex() {
     exec "$REAL_CODEX" "$@"
   fi
 
+  case "${CODEX_WATCH_HOLD_ESC-1}" in
+    ''|0|[fF][aA][lL][sS][eE]|[nN][oO]|[oO][fF][fF]) ;;
+    *)
+      exec "$WATCH_BIN" --hold-esc -- "$REAL_CODEX" \
+        -c 'tui.keymap.chat.interrupt_turn="f12"' "$@"
+      ;;
+  esac
+
   exec "$WATCH_BIN" -- "$REAL_CODEX" "$@"
 }
 
@@ -362,6 +370,8 @@ build_tmux_command() {
     CODEX_WATCH_SAFETY_CHECK_COOLDOWN \
     CODEX_WATCH_LOG \
     CODEX_WATCH_NO_TMUX_DETACH_HOTKEY \
+    CODEX_WATCH_HOLD_ESC \
+    CODEX_WATCH_ESC_HOLD_SECONDS \
     CODEX_WATCH_DISABLE \
     CODEX_LINUX_DEP_CHECK
   do

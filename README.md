@@ -8,6 +8,7 @@ It runs Codex through a PTY watcher and automatically:
 - Uses arrow keys to select **Keep waiting**, then presses Return when the
   complete **Additional safety checks** prompt appears.
 - Keeps working after you detach from tmux.
+- Keeps a tapped Esc for dismissing menus, and requires holding Esc to interrupt.
 
 The two automatic actions are independent and protected by separate cooldowns.
 Safety prompts detected during their cooldown are left untouched; the watcher
@@ -70,6 +71,36 @@ Attach to it or create a new one? [A/n/q]
 Inside tmux, Codex runs in the current session without nesting another tmux.
 Commands with arguments start in a dedicated project tmux session. There is
 intentionally no mode that runs Codex outside tmux.
+
+## Hold Esc to interrupt
+
+The launcher overrides Codex's `tui.keymap.chat.interrupt_turn` to `f12` for the
+wrapped process only. The watcher sends F12 once when it sees a sustained Esc
+repeat stream. A short Esc tap still reaches Codex to dismiss menus, but cannot
+interrupt the active turn. F12 also remains available as an immediate interrupt.
+This requires a Codex CLI version supporting `tui.keymap.chat.interrupt_turn`;
+the integration was checked against 0.160.0.
+
+With ordinary tmux input there are no key-release events. Holding is inferred
+from continuous key repeat, requiring 0.5 seconds of repeats with no gap longer
+than 0.2 seconds. Depending on the terminal's initial repeat delay, hold Esc for
+roughly a second. A timer after a single tap never triggers interruption. Rapid
+repeated tapping can look like a hold; disabled or very slow key repeat cannot
+trigger it. Arrow keys, Alt combinations, terminal replies, and bracketed paste
+are passed through without being mistaken for Esc holds.
+
+```sh
+# Disable both the Esc filter and its temporary Codex interrupt binding.
+CODEX_WATCH_HOLD_ESC=0 codex
+
+# Require a longer stream of repeats.
+CODEX_WATCH_ESC_HOLD_SECONDS=0.8 codex
+```
+
+These settings apply to new watcher processes. Attaching to an existing tmux
+session keeps its existing behavior; start a new session or restart Codex in
+that session after its work finishes to load changes. Do not override
+`tui.keymap.chat.interrupt_turn` in a guarded launch: the watcher expects F12.
 
 ## Configuration
 
