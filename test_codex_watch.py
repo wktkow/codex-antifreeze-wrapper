@@ -374,8 +374,12 @@ os.write(1, b"RECEIVED=" + received.removesuffix(b"\x04").hex().encode() + b"\n"
             fake_watch = pathlib.Path(directory) / "watch"
             fake_watch.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\"\n")
             fake_watch.chmod(0o755)
+            fake_tmux = pathlib.Path(directory) / "tmux"
+            fake_tmux.write_text("#!/bin/sh\nexit 0\n")
+            fake_tmux.chmod(0o755)
             env = {**os.environ, "TMUX": "test", "CODEX_REAL_BIN": "/bin/echo",
-                   "CODEX_WATCH_BIN": str(fake_watch), "CODEX_LINUX_DEP_CHECK": "0"}
+                   "CODEX_WATCH_BIN": str(fake_watch), "CODEX_LINUX_DEP_CHECK": "0",
+                   "CODEX_TMUX_BIN": str(fake_tmux)}
             for name in ["CODEX_WATCH_HOLD_ESC", "CODEX_WATCH_DISABLE"]:
                 env.pop(name, None)
             launcher = str(MODULE_PATH.with_name("codex"))

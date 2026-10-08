@@ -4,6 +4,7 @@ A small wrapper that keeps Codex moving in long-running tmux sessions.
 
 It runs Codex through a PTY watcher and automatically:
 
+- Passes Codex's title and running animation through to the terminal tab title.
 - Sends `/goal resume` when `Goal blocked` appears.
 - Uses arrow keys to select **Keep waiting**, then presses Return when the
   complete **Additional safety checks** prompt appears.
@@ -71,6 +72,12 @@ Attach to it or create a new one? [A/n/q]
 Inside tmux, Codex runs in the current session without nesting another tmux.
 Commands with arguments start in a dedicated project tmux session. There is
 intentionally no mode that runs Codex outside tmux.
+
+The terminal tab follows the active pane's title, including every title update
+Codex emits while running. Title forwarding is enabled for the Codex session on
+launch and reattach, and also works with `CODEX_WATCH_DISABLE=1`. Reattaching
+through the updated wrapper enables it for an existing session without restarting
+Codex. The terminal must allow applications to update its tab title.
 
 ## Hold Esc to interrupt
 
